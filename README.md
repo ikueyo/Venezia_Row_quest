@@ -110,7 +110,7 @@ In test mode, tap Start, then tap Left, Right, Row, Boost, or Brake to simulate 
 ## Tuning cheatsheet (`three-rowing.js`)
 
 - **Rowing feel** — `applyControls()`: forward drive `drive * 0.09`, glide `speed * 0.986`; steering gain `0.016` and turn cap `0.018`.
-- **Motion sensitivity** — pose deadzone/gain in `poseMotion()`.
+- **Motion sensitivity** — `POSE_MOTION_DEADZONE`, `POSE_MOTION_GAIN`, `ROW_SMOOTHING`, and `STROKE_ENVELOPE_DECAY`. Raise deadzone / smoothing to reduce twitching; lower them to make the boat respond faster.
 - **Gate difficulty** — `GATE_TOLERANCE` (pass window) and `GATE_Z0` (where a gate is judged, near the boat).
 - **Scenery scroll / recycle** — `SCENERY_PERIOD`, `SCENERY_NEAR`.
 - **Church windows** — grid in `addChurch()` (facade 12 + tower 4 = 16 slots).

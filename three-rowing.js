@@ -51,6 +51,14 @@ const GATE_Z0 = 2.5;
 // Extra half-width tolerance (in lane units) added to each gate opening.
 const GATE_TOLERANCE = 0.2;
 
+// Pose tuning: higher deadzone + lower gain makes wrist tracking less twitchy
+// in classroom lighting, while smoothing keeps the boat from jolting.
+const POSE_MOTION_DEADZONE = 0.014;
+const POSE_MOTION_GAIN = 7;
+const ROW_SMOOTHING = 0.84;
+const ROW_INPUT_GAIN = 1 - ROW_SMOOTHING;
+const STROKE_ENVELOPE_DECAY = 0.9;
+
 const state = {
   cameraReady: false,
   running: false,
@@ -1686,7 +1694,7 @@ function poseMotion(landmarks) {
       const speed = Math.hypot(lm.x - prev.x, lm.y - prev.y);
       // Deadzone removes small jitter so the sensor is less twitchy,
       // then a gentle gain scales a real stroke up to ~1.
-      const activity = Math.min(1, Math.max(0, speed - 0.008) * 10);
+      const activity = Math.min(1, Math.max(0, speed - POSE_MOTION_DEADZONE) * POSE_MOTION_GAIN);
       // Mirror x so it matches the mirrored preview / player's own view.
       const screenX = 1 - lm.x;
       if (screenX < 0.5) left += activity;
@@ -1744,14 +1752,14 @@ function applyControls(motion) {
   }
 
   // Smoothed values drive the on-screen meters and oar animation.
-  state.rowLeft = state.rowLeft * 0.74 + left * 0.26;
-  state.rowRight = state.rowRight * 0.74 + right * 0.26;
+  state.rowLeft = state.rowLeft * ROW_SMOOTHING + left * ROW_INPUT_GAIN;
+  state.rowRight = state.rowRight * ROW_SMOOTHING + right * ROW_INPUT_GAIN;
 
   // Peak-hold envelopes: a stroke jumps the envelope up instantly and it
   // decays over ~0.15s. This lets a single pull register even though the two
   // arms rarely peak on the exact same frame, so "both arms" rowing works.
-  state.envLeft = Math.max(state.envLeft * 0.86, left);
-  state.envRight = Math.max(state.envRight * 0.86, right);
+  state.envLeft = Math.max(state.envLeft * STROKE_ENVELOPE_DECAY, left);
+  state.envRight = Math.max(state.envRight * STROKE_ENVELOPE_DECAY, right);
 
   // Forward drive needs BOTH arms; a deadzone means a genuine two-arm stroke.
   const bothPower = Math.min(state.envLeft, state.envRight);
