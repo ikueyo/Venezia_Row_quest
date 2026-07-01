@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#08141f" />
+    <title>Venice Row Quest</title>
+    <link rel="stylesheet" href="./rowing.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="stage" aria-label="Venice Row Quest game stage">
+        <canvas id="gameCanvas" class="game-canvas"></canvas>
+        <canvas id="analysisCanvas" class="analysis-canvas"></canvas>
+
+        <div class="shade"></div>
+        <div id="sparkLayer" class="spark-layer" aria-hidden="true"></div>
+
+        <header class="topbar">
+          <div class="brand">
+            <span class="brand-mark"></span>
+            <div>
+              <p class="eyebrow">Italy Motion Game</p>
+              <h1>Venice Row Quest</h1>
+            </div>
+          </div>
+
+          <div class="topbar-right">
+            <button id="adminToggle" class="gear-button" type="button" title="Admin" aria-label="Admin settings">⚙</button>
+          </div>
+        </header>
+
+        <div id="adminPanel" class="admin-panel" role="dialog" aria-label="Admin panel" hidden>
+          <p class="admin-title">Admin</p>
+          <p class="admin-note">Enter the passcode to reset all installed church windows.</p>
+          <input id="adminPassword" class="admin-input" type="password" placeholder="Passcode" autocomplete="off" />
+          <div class="admin-actions">
+            <button id="adminReset" class="admin-btn danger" type="button">Reset all windows</button>
+            <button id="adminClose" class="admin-btn" type="button">Close</button>
+          </div>
+          <p id="adminMsg" class="admin-msg" aria-live="polite"></p>
+        </div>
+
+        <section class="mission-panel" aria-live="polite">
+          <p id="missionTag" class="mission-tag">Ready</p>
+          <h2 id="missionTitle">Venice Row Quest 3D</h2>
+          <p id="missionHint">Scan your stained-glass artwork, then row to the Basilica. Row with BOTH arms to move forward; right arm only turns left, left arm only turns right.</p>
+
+          <div class="meter-row" aria-label="Rowing motion meters">
+            <div class="meter">
+              <span class="meter-label">Left Row</span>
+              <span class="meter-track"><span id="leftMeter" class="meter-fill left"></span></span>
+            </div>
+            <div class="meter">
+              <span class="meter-label">Right Row</span>
+              <span class="meter-track"><span id="rightMeter" class="meter-fill right"></span></span>
+            </div>
+            <div class="meter">
+              <span class="meter-label">Speed</span>
+              <span class="meter-track"><span id="speedMeter" class="meter-fill speed"></span></span>
+            </div>
+            <div class="meter">
+              <span class="meter-label">Balance</span>
+              <span class="meter-track"><span id="balanceMeter" class="meter-fill balance"></span></span>
+            </div>
+          </div>
+        </section>
+
+        <aside class="teacher-panel" aria-label="Teacher controls">
+          <button id="startCamera" class="icon-button primary" type="button" title="Start camera">
+            <span aria-hidden="true">Cam</span>
+            <span>Camera</span>
+          </button>
+          <button id="scanArt" class="icon-button scan" type="button" title="Scan artwork">
+            <span aria-hidden="true">Scan</span>
+            <span>Scan</span>
+          </button>
+          <button id="startGame" class="icon-button" type="button" title="Start game">
+            <span aria-hidden="true">Go</span>
+            <span>Start</span>
+          </button>
+          <button id="resetGame" class="icon-button" type="button" title="Reset game">
+            <span aria-hidden="true">New</span>
+            <span>Reset</span>
+          </button>
+          <button id="passGate" class="icon-button" type="button" title="Pass gate">
+            <span aria-hidden="true">Ok</span>
+            <span>Pass</span>
+          </button>
+          <button id="fullscreen" class="icon-button" type="button" title="Fullscreen">
+            <span aria-hidden="true">Full</span>
+            <span>Full</span>
+          </button>
+        </aside>
+
+        <aside id="testPanel" class="test-panel" aria-label="Test controls" hidden>
+          <p>Test Mode</p>
+          <button type="button" data-test-action="left">Left</button>
+          <button type="button" data-test-action="right">Right</button>
+          <button type="button" data-test-action="row">Row</button>
+          <button type="button" data-test-action="boost">Boost</button>
+          <button type="button" data-test-action="brake">Brake</button>
+        </aside>
+
+        <footer class="prompt-strip">
+          <span id="spokenLine">Row, row, row!</span>
+        </footer>
+
+        <aside id="cameraPanel" class="camera-panel" aria-label="Camera and sensor skeleton preview">
+          <video id="camera" class="camera-feed" autoplay playsinline muted></video>
+          <canvas id="skeletonCanvas" class="skeleton-canvas"></canvas>
+          <span class="scan-guide" aria-hidden="true"></span>
+          <span class="camera-panel-label">Sensor</span>
+        </aside>
+
+        <div id="cameraNotice" class="notice" role="status">
+          Tap <strong>Camera</strong>, then hold your stained-glass artwork in the corner box and tap <strong>Scan</strong>. Row with <strong>both arms</strong> to carry it to the <strong>Basilica</strong>; one arm to turn.
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="./three-rowing.js"></script>
+  </body>
+</html>

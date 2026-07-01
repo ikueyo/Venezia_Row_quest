@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Venice Row Quest Teacher Test</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: "Segoe UI", Arial, "Noto Sans TC", sans-serif;
+        background: #08141f;
+        color: #f8fbff;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          radial-gradient(circle at 18% 18%, rgba(255, 209, 102, 0.18), transparent 22rem),
+          radial-gradient(circle at 86% 12%, rgba(57, 198, 214, 0.2), transparent 26rem),
+          #08141f;
+      }
+
+      main {
+        width: min(1080px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: 32px 0;
+      }
+
+      h1 {
+        margin: 0 0 10px;
+        font-size: clamp(2rem, 5vw, 4.2rem);
+        line-height: 1;
+      }
+
+      h2 {
+        margin: 28px 0 12px;
+      }
+
+      p,
+      li {
+        color: rgba(248, 251, 255, 0.78);
+        font-size: 1.04rem;
+        line-height: 1.65;
+      }
+
+      a {
+        color: #9bd2ff;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin: 22px 0 30px;
+      }
+
+      .action {
+        display: inline-flex;
+        min-height: 48px;
+        align-items: center;
+        justify-content: center;
+        padding: 0 18px;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        border-radius: 8px;
+        background: #1f8fff;
+        color: #ffffff;
+        font-weight: 900;
+        text-decoration: none;
+      }
+
+      .action.secondary {
+        background: rgba(255, 255, 255, 0.1);
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .card {
+        min-height: 150px;
+        padding: 18px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.08);
+      }
+
+      .card strong {
+        display: block;
+        margin-bottom: 8px;
+        color: #ffffff;
+        font-size: 1.08rem;
+      }
+
+      .card p {
+        margin: 0;
+      }
+
+      @media (max-width: 760px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>威尼斯 3D 划船體感遊戲測試工具</h1>
+      <p>
+        這版遊戲改成 Three.js 3D 威尼斯 gondola 闖關。孩子站在 iPad 鏡頭前，用大幅度左右划船動作控制畫面上的 3D 小船，
+        穿過運河上的發光任務門。彩繪玻璃作品可以當作闖關前展示的船票或隊伍徽章。
+      </p>
+
+      <div class="actions">
+        <a class="action" href="./index.html?test=1">開啟測試模式</a>
+        <a class="action secondary" href="./index.html">開啟正式遊戲</a>
+      </div>
+
+      <h2>孩子怎麼玩</h2>
+      <ol>
+        <li>老師用 iPad 開正式遊戲，投影到大螢幕。</li>
+        <li>孩子站在鏡頭前，雙手像拿船槳一樣左右划。</li>
+        <li>左邊動作和右邊動作會影響小船方向與速度。</li>
+        <li>目標是穿過 Ciao Gate、Rialto Bridge、Glass Window、Pizza Stop、Museum Dock。</li>
+        <li>每過一關，全班一起念畫面下方英文句子。</li>
+      </ol>
+
+      <h2>測試模式怎麼用</h2>
+      <ol>
+        <li>按「開啟測試模式」。</li>
+        <li>按 Start。</li>
+        <li>不用開相機，按 Left / Right / Row / Boost / Brake 測試小船控制。</li>
+        <li>如果現場光線不好，老師可以用 Pass 讓小組直接過關。</li>
+      </ol>
+
+      <h2>控制意思</h2>
+      <section class="grid">
+        <div class="card">
+          <strong>Left</strong>
+          <p>模擬左側划船動作，讓小船往一邊轉。</p>
+        </div>
+        <div class="card">
+          <strong>Right</strong>
+          <p>模擬右側划船動作，讓小船往另一邊轉。</p>
+        </div>
+        <div class="card">
+          <strong>Row</strong>
+          <p>左右一起划，讓小船穩定往前。</p>
+        </div>
+        <div class="card">
+          <strong>Boost</strong>
+          <p>快速加速，用來測試闖關節奏。</p>
+        </div>
+        <div class="card">
+          <strong>Brake</strong>
+          <p>減速，測試孩子划太快時畫面是否還好控制。</p>
+        </div>
+        <div class="card">
+          <strong>Pass</strong>
+          <p>老師手動過關，給現場備援。</p>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
