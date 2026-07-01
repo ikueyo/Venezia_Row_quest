@@ -50,7 +50,7 @@ All audio files are optional — missing files are skipped automatically.
 
 | Purpose | File | Behavior |
 | --- | --- | --- |
-| Rowing music | `assets/rowing-music.m4a` | Plays only while rowing; tempo tracks rowing speed (**0.25×–1.5×**). Resumes from its position (never restarts). |
+| Rowing music | `assets/rowing-music.m4a` | Unlocks on the first button tap, stays alive silently, then fades in while rowing; tempo tracks rowing speed (**0.25×–1.5×**). |
 | Basilica arrival music | `assets/gate-pass.mp3` | Plays when the gondola reaches the Basilica. Falls back to a built-in synth fanfare if the file is missing. |
 | Gate spoken lines | `assets/lines/gate-1.mp3` … `gate-5.mp3` | One per gate, played when that gate is passed. See `assets/lines/README.txt`. |
 | UI button + countdown sounds | `assets/ui/*.mp3` | Optional button-click and Start countdown clips. See `assets/ui/README.txt`. Built-in WebAudio beeps play if files are missing. |

@@ -93,8 +93,10 @@ const MUSIC_SRC = "./assets/rowing-music.m4a";
 const rowMusic = new Audio(MUSIC_SRC);
 rowMusic.loop = true;
 rowMusic.preload = "auto";
+rowMusic.volume = 0;
 let musicAvailable = true;
 let musicPrimed = false;
+let musicUnlocked = false;
 rowMusic.addEventListener("error", () => {
   musicAvailable = false;
 });
@@ -208,12 +210,20 @@ function playGateLine(index) {
 function primeMusic() {
   if (musicPrimed) return;
   musicPrimed = true;
-  // Unlock playback inside a user gesture, then pause until needed.
+  // iPad Safari may reject a later play() if it is not inside the original
+  // button tap. Start once at volume 0 and keep it alive; updateMusic() only
+  // changes volume and playbackRate after that.
   if (musicAvailable) {
+    rowMusic.volume = 0;
+    rowMusic.playbackRate = 0.25;
     rowMusic
       .play()
-      .then(() => rowMusic.pause())
-      .catch(() => {});
+      .then(() => {
+        musicUnlocked = true;
+      })
+      .catch(() => {
+        musicUnlocked = false;
+      });
   }
   if (gateMusicAvailable) {
     gateMusic
@@ -297,14 +307,11 @@ function updateMusic() {
   state.musicLevel = state.musicLevel * 0.9 + rowPower * 0.1;
 
   if (!state.running) {
-    // Between runs: pause but KEEP the position, so it resumes (never restarts).
-    if (!rowMusic.paused) rowMusic.pause();
+    rowMusic.volume = 0;
     return;
   }
 
-  // During a run keep the track playing continuously so it never jumps back to
-  // the start; gate the volume and tempo by how hard the student is rowing.
-  if (rowMusic.paused) rowMusic.play().catch(() => {});
+  if (rowMusic.paused && musicUnlocked) rowMusic.play().catch(() => {});
   const rowing = state.musicLevel > 0.04;
   const level = Math.min(1, state.musicLevel);
   rowMusic.playbackRate = rowing ? 0.25 + level * 1.25 : 0.25;
