@@ -328,7 +328,7 @@ h1 {
 
 .meter-row {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
   margin-top: 18px;
 }
@@ -367,10 +367,6 @@ h1 {
 
 .meter-fill.speed {
   background: var(--gold);
-}
-
-.meter-fill.balance {
-  background: var(--purple);
 }
 
 .teacher-panel {
@@ -504,6 +500,56 @@ h1 {
   display: none;
 }
 
+.countdown-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  background: radial-gradient(circle at 50% 46%, rgba(255, 255, 255, 0.26), transparent 32rem);
+  color: #fff;
+  text-shadow: 0 10px 36px rgba(20, 40, 90, 0.52), 0 0 0.08em rgba(20, 48, 74, 0.8);
+}
+
+.countdown-overlay[hidden] {
+  display: none;
+}
+
+.countdown-overlay span {
+  min-width: min(42vw, 360px);
+  text-align: center;
+  font-size: clamp(7rem, 24vw, 18rem);
+  font-weight: 950;
+  line-height: 0.88;
+  animation: countdown-pop 0.72s ease-out both;
+}
+
+.countdown-overlay.is-go span {
+  min-width: min(62vw, 520px);
+  font-size: clamp(5.2rem, 16vw, 12rem);
+}
+
+@keyframes countdown-pop {
+  0% {
+    transform: scale(0.72);
+    opacity: 0;
+  }
+
+  18% {
+    opacity: 1;
+  }
+
+  62% {
+    transform: scale(1.04);
+  }
+
+  100% {
+    transform: scale(0.96);
+    opacity: 0.94;
+  }
+}
+
 .is-success .mission-panel {
   border-color: rgba(255, 255, 255, 0.42);
   box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.1), 0 18px 70px rgba(255, 209, 102, 0.25);
@@ -589,7 +635,7 @@ h1 {
   }
 
   .meter-row {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .teacher-panel {

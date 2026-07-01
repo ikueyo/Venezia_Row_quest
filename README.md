@@ -53,6 +53,7 @@ All audio files are optional — missing files are skipped automatically.
 | Rowing music | `assets/rowing-music.m4a` | Plays only while rowing; tempo tracks rowing speed (**0.25×–1.5×**). Resumes from its position (never restarts). |
 | Basilica arrival music | `assets/gate-pass.mp3` | Plays when the gondola reaches the Basilica. Falls back to a built-in synth fanfare if the file is missing. |
 | Gate spoken lines | `assets/lines/gate-1.mp3` … `gate-5.mp3` | One per gate, played when that gate is passed. See `assets/lines/README.txt`. |
+| UI button + countdown sounds | `assets/ui/*.mp3` | Optional button-click and Start countdown clips. See `assets/ui/README.txt`. Built-in WebAudio beeps play if files are missing. |
 
 Audio unlocks on the first button tap (Camera / Scan / Start), as required by mobile autoplay rules.
 
@@ -89,11 +90,12 @@ In test mode, tap Start, then tap Left, Right, Row, Boost, or Brake to simulate 
 1. Open the site on the iPad and tap **Camera** to allow camera access.
 2. Mirror or project the iPad screen.
 3. The student holds their stained-glass artwork inside the dashed box in the corner preview and taps **Scan**.
-4. Students row with big **two-arm** motions to move forward; **one arm** to turn.
-5. The 3D gondola passes through each glowing gate, then continues to the Basilica.
-6. On arrival the artwork is installed into the next church window and saved.
-7. Tap **Reset** for the next student. Use **Pass** if room lighting makes motion recognition difficult.
-8. Use the **⚙ admin panel** to clear all windows at the end of the day / session.
+4. Tap **Start** and wait for the large **3-2-1-GO** countdown.
+5. Students row with big **two-arm** motions to move forward; **one arm** to turn.
+6. The 3D gondola passes through each glowing gate, then continues to the Basilica.
+7. On arrival the artwork is installed into the next church window and saved.
+8. Tap **Reset** for the next student.
+9. Use the **⚙ admin panel** to clear all windows at the end of the day / session.
 
 ## Gates & Spoken Lines
 

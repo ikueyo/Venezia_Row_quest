@@ -15,7 +15,8 @@ const els = {
   leftMeter: document.querySelector("#leftMeter"),
   rightMeter: document.querySelector("#rightMeter"),
   speedMeter: document.querySelector("#speedMeter"),
-  balanceMeter: document.querySelector("#balanceMeter"),
+  countdownOverlay: document.querySelector("#countdownOverlay"),
+  countdownNumber: document.querySelector("#countdownNumber"),
   notice: document.querySelector("#cameraNotice"),
   sparkLayer: document.querySelector("#sparkLayer"),
   stage: document.querySelector(".stage"),
@@ -23,7 +24,6 @@ const els = {
   scanArt: document.querySelector("#scanArt"),
   startGame: document.querySelector("#startGame"),
   resetGame: document.querySelector("#resetGame"),
-  passGate: document.querySelector("#passGate"),
   fullscreen: document.querySelector("#fullscreen"),
   testPanel: document.querySelector("#testPanel"),
   adminToggle: document.querySelector("#adminToggle"),
@@ -75,6 +75,8 @@ const state = {
   hasArt: false,
   delivered: false,
   musicLevel: 0,
+  countdownActive: false,
+  countdownTimers: [],
 };
 
 // --- Rowing music: plays only while rowing; tempo tracks rowing speed. ---
@@ -96,6 +98,44 @@ gateMusic.preload = "auto";
 let gateMusicAvailable = true;
 gateMusic.addEventListener("error", () => {
   gateMusicAvailable = false;
+});
+
+// --- UI sound placeholders. Drop files in assets/ui/ to override synth cues. ---
+const buttonClickAudio = new Audio("./assets/ui/button-click.mp3");
+buttonClickAudio.preload = "auto";
+buttonClickAudio.volume = 0.45;
+buttonClickAudio._ok = true;
+buttonClickAudio.addEventListener("error", () => {
+  buttonClickAudio._ok = false;
+});
+
+const countdownAudios = {
+  "3": new Audio("./assets/ui/countdown-3.mp3"),
+  "2": new Audio("./assets/ui/countdown-2.mp3"),
+  "1": new Audio("./assets/ui/countdown-1.mp3"),
+  GO: new Audio("./assets/ui/countdown-go.mp3"),
+};
+Object.values(countdownAudios).forEach((audio) => {
+  audio.preload = "auto";
+  audio.volume = 0.85;
+  audio._ok = true;
+  audio.addEventListener("error", () => {
+    audio._ok = false;
+  });
+});
+
+function detectOptionalAudio(audio, src) {
+  fetch(src, { method: "HEAD" })
+    .then((response) => {
+      audio._ok = response.ok;
+    })
+    .catch(() => {
+      audio._ok = false;
+    });
+}
+detectOptionalAudio(buttonClickAudio, "./assets/ui/button-click.mp3");
+Object.entries(countdownAudios).forEach(([label, audio]) => {
+  detectOptionalAudio(audio, `./assets/ui/countdown-${label.toLowerCase()}.mp3`);
 });
 
 // --- Spoken line per gate (played when that gate is passed). ---
@@ -191,6 +231,23 @@ function primeMusic() {
         audio.muted = false;
       });
   });
+  primeOptionalAudio(buttonClickAudio);
+  Object.values(countdownAudios).forEach(primeOptionalAudio);
+}
+
+function primeOptionalAudio(audio) {
+  if (!audio || audio._ok === false) return;
+  audio.muted = true;
+  audio
+    .play()
+    .then(() => {
+      audio.pause();
+      audio.currentTime = 0;
+      audio.muted = false;
+    })
+    .catch(() => {
+      audio.muted = false;
+    });
 }
 
 function playArrivalMusic() {
@@ -1109,6 +1166,52 @@ async function startCamera() {
   }
 }
 
+function clearCountdown() {
+  state.countdownTimers.forEach((timer) => clearTimeout(timer));
+  state.countdownTimers = [];
+  state.countdownActive = false;
+  if (els.countdownOverlay) {
+    els.countdownOverlay.hidden = true;
+    els.countdownOverlay.classList.remove("is-go");
+  }
+}
+
+function showCountdownLabel(label) {
+  if (!els.countdownOverlay || !els.countdownNumber) return;
+  els.countdownNumber.textContent = label;
+  els.countdownOverlay.classList.toggle("is-go", label === "GO");
+  els.countdownOverlay.hidden = false;
+  els.countdownNumber.style.animation = "none";
+  els.countdownNumber.offsetHeight;
+  els.countdownNumber.style.animation = "";
+  playCountdownCue(label);
+}
+
+function startGameCountdown() {
+  if (state.countdownActive) return;
+  unlockAudio();
+  state.countdownActive = true;
+  state.running = false;
+  state.speed = 0;
+  state.turn = 0;
+  updateHud();
+  els.notice.classList.add("is-hidden");
+
+  ["3", "2", "1", "GO"].forEach((label, index) => {
+    const timer = setTimeout(() => {
+      showCountdownLabel(label);
+      if (label === "GO") {
+        const startTimer = setTimeout(() => {
+          clearCountdown();
+          startGame();
+        }, 750);
+        state.countdownTimers.push(startTimer);
+      }
+    }, index * 1000);
+    state.countdownTimers.push(timer);
+  });
+}
+
 function startGame() {
   state.running = true;
   state.score = 0;
@@ -1127,6 +1230,7 @@ function startGame() {
 }
 
 function resetGame() {
+  clearCountdown();
   state.running = false;
   state.score = 0;
   state.gateIndex = 0;
@@ -1158,11 +1262,6 @@ function resetGame() {
   updateHud();
   els.notice.innerHTML = "Tap Camera, then Scan your stained-glass artwork, then row with BOTH arms toward the Basilica. Row one arm to turn.";
   els.notice.classList.remove("is-hidden");
-}
-
-function passGate() {
-  if (!state.running) startGame();
-  completeGate(true);
 }
 
 // Capture the student's artwork (center of frame) and head (from pose) and
@@ -1395,8 +1494,8 @@ function updateMission(reset = false) {
 function updateHud() {
   els.leftMeter.style.width = `${Math.min(100, state.rowLeft * 160)}%`;
   els.rightMeter.style.width = `${Math.min(100, state.rowRight * 160)}%`;
-  els.speedMeter.style.width = `${Math.min(100, state.speed * 520)}%`;
-  els.balanceMeter.style.width = `${Math.min(100, state.balance * 100)}%`;
+  const speedLevel = Math.min(1, Math.max(0, state.speed / 0.22));
+  els.speedMeter.style.width = `${Math.round(speedLevel * speedLevel * 100)}%`;
 }
 
 function unlockAudio() {
@@ -1409,6 +1508,45 @@ function unlockAudio() {
   if (!AudioContext) return;
   state.audio = new AudioContext();
   if (state.audio.state === "suspended") state.audio.resume().catch(() => {});
+}
+
+function playSynthTone(frequency, duration = 0.12, volume = 0.08, type = "sine") {
+  if (!state.audio) return;
+  const now = state.audio.currentTime;
+  const osc = state.audio.createOscillator();
+  const gain = state.audio.createGain();
+  osc.type = type;
+  osc.frequency.value = frequency;
+  gain.gain.setValueAtTime(0, now);
+  gain.gain.linearRampToValueAtTime(volume, now + 0.01);
+  gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+  osc.connect(gain);
+  gain.connect(state.audio.destination);
+  osc.start(now);
+  osc.stop(now + duration + 0.02);
+}
+
+function playOptionalAudio(audio, fallback) {
+  if (audio && audio._ok !== false) {
+    try {
+      audio.currentTime = 0;
+      audio.play().catch(() => fallback?.());
+      return;
+    } catch (error) {
+      // fall through to synth
+    }
+  }
+  fallback?.();
+}
+
+function playButtonClick() {
+  playOptionalAudio(buttonClickAudio, () => playSynthTone(880, 0.09, 0.045, "triangle"));
+}
+
+function playCountdownCue(label) {
+  const audio = countdownAudios[label];
+  const frequency = label === "GO" ? 1046.5 : 523.25 + Number(label) * 110;
+  playOptionalAudio(audio, () => playSynthTone(frequency, 0.24, label === "GO" ? 0.13 : 0.1, "square"));
 }
 
 function playChime() {
@@ -1769,6 +1907,16 @@ function frame(now) {
   requestAnimationFrame(frame);
 }
 
+document.addEventListener(
+  "click",
+  (event) => {
+    if (!event.target.closest("button")) return;
+    unlockAudio();
+    playButtonClick();
+  },
+  true,
+);
+
 els.startCamera.addEventListener("click", () => {
   unlockAudio();
   startCamera();
@@ -1777,9 +1925,8 @@ els.scanArt.addEventListener("click", () => {
   unlockAudio();
   captureScan();
 });
-els.startGame.addEventListener("click", startGame);
+els.startGame.addEventListener("click", startGameCountdown);
 els.resetGame.addEventListener("click", resetGame);
-els.passGate.addEventListener("click", passGate);
 els.fullscreen.addEventListener("click", () => {
   unlockAudio();
   if (!document.fullscreenElement) {

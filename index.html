@@ -59,10 +59,6 @@
               <span class="meter-label">Speed</span>
               <span class="meter-track"><span id="speedMeter" class="meter-fill speed"></span></span>
             </div>
-            <div class="meter">
-              <span class="meter-label">Balance</span>
-              <span class="meter-track"><span id="balanceMeter" class="meter-fill balance"></span></span>
-            </div>
           </div>
         </section>
 
@@ -82,10 +78,6 @@
           <button id="resetGame" class="icon-button" type="button" title="Reset game">
             <span aria-hidden="true">New</span>
             <span>Reset</span>
-          </button>
-          <button id="passGate" class="icon-button" type="button" title="Pass gate">
-            <span aria-hidden="true">Ok</span>
-            <span>Pass</span>
           </button>
           <button id="fullscreen" class="icon-button" type="button" title="Fullscreen">
             <span aria-hidden="true">Full</span>
@@ -115,6 +107,10 @@
 
         <div id="cameraNotice" class="notice" role="status">
           Tap <strong>Camera</strong>, then hold your stained-glass artwork in the corner box and tap <strong>Scan</strong>. Row with <strong>both arms</strong> to carry it to the <strong>Basilica</strong>; one arm to turn.
+        </div>
+
+        <div id="countdownOverlay" class="countdown-overlay" aria-live="assertive" aria-atomic="true" hidden>
+          <span id="countdownNumber">3</span>
         </div>
       </section>
     </main>
