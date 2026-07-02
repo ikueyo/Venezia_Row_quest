@@ -97,9 +97,38 @@ rowMusic.volume = 0;
 let musicAvailable = true;
 let musicPrimed = false;
 let musicUnlocked = false;
+let musicGain = null;
+let musicRouted = false;
 rowMusic.addEventListener("error", () => {
   musicAvailable = false;
 });
+
+// iOS Safari ignores HTMLMediaElement.volume (it always plays at the hardware
+// volume). Route the track through a WebAudio GainNode instead, same as the
+// spoken gate lines below, so the fade in/out actually works on iPad.
+function routeMusicThroughGain() {
+  if (musicRouted || !state.audio) return;
+  try {
+    const source = state.audio.createMediaElementSource(rowMusic);
+    musicGain = state.audio.createGain();
+    musicGain.gain.value = 0;
+    source.connect(musicGain);
+    musicGain.connect(state.audio.destination);
+    rowMusic.volume = 1; // neutral: the gain node is now the real volume control
+    musicRouted = true;
+  } catch (error) {
+    // Web Audio routing unavailable; fall back to element volume (harmless
+    // no-op on iOS, still works on desktop/Android).
+  }
+}
+
+function setMusicVolume(value) {
+  if (musicGain) {
+    musicGain.gain.value = value;
+  } else {
+    rowMusic.volume = value;
+  }
+}
 
 // --- Basilica-arrival music: an optional audio file, with a synth fallback. ---
 const GATE_MUSIC_SRC = "./assets/gate-pass.mp3";
@@ -162,6 +191,13 @@ const GATE_LINE_GAIN = 1.8; // WebAudio amplification so lines are nice and loud
 const MUSIC_DUCK_VOLUME = 0.18; // rowing-music volume while a spoken line plays
 let lineDuckUntil = 0; // performance.now() until which the music stays ducked
 
+// iOS Safari's audio pipeline stutters (eventually going silent) if
+// playbackRate is rewritten every animation frame. Only write it when it has
+// moved meaningfully, and no more often than this interval.
+const PLAYBACK_RATE_MIN_DELTA = 0.02;
+const PLAYBACK_RATE_MIN_INTERVAL_MS = 150;
+let lastPlaybackRateWrite = 0;
+
 const gateLineAudios = GATE_LINE_SRCS.map((src) => {
   const audio = new Audio(src);
   audio.preload = "auto";
@@ -210,11 +246,12 @@ function playGateLine(index) {
 function primeMusic() {
   if (musicPrimed) return;
   musicPrimed = true;
+  routeMusicThroughGain();
   // iPad Safari may reject a later play() if it is not inside the original
   // button tap. Start once at volume 0 and keep it alive; updateMusic() only
   // changes volume and playbackRate after that.
   if (musicAvailable) {
-    rowMusic.volume = 0;
+    setMusicVolume(0);
     rowMusic.playbackRate = 0.25;
     rowMusic
       .play()
@@ -307,18 +344,24 @@ function updateMusic() {
   state.musicLevel = state.musicLevel * 0.9 + rowPower * 0.1;
 
   if (!state.running) {
-    rowMusic.volume = 0;
+    setMusicVolume(0);
     return;
   }
 
   if (rowMusic.paused && musicUnlocked) rowMusic.play().catch(() => {});
   const rowing = state.musicLevel > 0.04;
   const level = Math.min(1, state.musicLevel);
-  rowMusic.playbackRate = rowing ? 0.25 + level * 1.25 : 0.25;
+  const targetRate = rowing ? 0.25 + level * 1.25 : 0.25;
+  const now = performance.now();
+  const rateMoved = Math.abs(targetRate - rowMusic.playbackRate) > PLAYBACK_RATE_MIN_DELTA;
+  if (rateMoved && now - lastPlaybackRateWrite > PLAYBACK_RATE_MIN_INTERVAL_MS) {
+    rowMusic.playbackRate = targetRate;
+    lastPlaybackRateWrite = now;
+  }
   // Duck the music while a spoken gate line is playing so the voice stands out.
-  const ducking = performance.now() < lineDuckUntil;
+  const ducking = now < lineDuckUntil;
   const fullVolume = ducking ? MUSIC_DUCK_VOLUME : 1;
-  rowMusic.volume = rowing ? fullVolume : 0;
+  setMusicVolume(rowing ? fullVolume : 0);
 }
 
 // --- Pose sensor (MediaPipe) ---
@@ -1514,15 +1557,14 @@ function updateHud() {
 }
 
 function unlockAudio() {
-  primeMusic();
-  if (state.audio) {
-    if (state.audio.state === "suspended") state.audio.resume().catch(() => {});
-    return;
+  if (!state.audio) {
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (AudioContext) state.audio = new AudioContext();
   }
-  const AudioContext = window.AudioContext || window.webkitAudioContext;
-  if (!AudioContext) return;
-  state.audio = new AudioContext();
-  if (state.audio.state === "suspended") state.audio.resume().catch(() => {});
+  if (state.audio && state.audio.state === "suspended") {
+    state.audio.resume().catch(() => {});
+  }
+  primeMusic();
 }
 
 function playSynthTone(frequency, duration = 0.12, volume = 0.08, type = "sine") {
