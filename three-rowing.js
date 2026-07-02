@@ -93,12 +93,13 @@ const state = {
   shakeCooldown: 0,
   hasArt: false,
   delivered: false,
-  musicLevel: 0,
   countdownActive: false,
   countdownTimers: [],
 };
 
-// --- Rowing music: plays only while rowing; tempo tracks rowing speed. ---
+// --- Rowing music: plays at a steady, natural tempo once the game starts. ---
+// (We deliberately do NOT vary playbackRate: iPad Safari re-decodes on every
+// playbackRate change and stutters/goes silent. Constant 1.0x is rock-solid.)
 // Drop your track at this path (or change the filename here).
 const MUSIC_SRC = "./assets/rowing-music.m4a";
 const rowMusic = new Audio(MUSIC_SRC);
@@ -133,7 +134,12 @@ function routeMusicThroughGain() {
   }
 }
 
+let lastMusicVolume = -1;
 function setMusicVolume(value) {
+  // Dedup: writing the gain node every animation frame is another iOS audio
+  // stutter source, so only push a value when it actually changes.
+  if (value === lastMusicVolume) return;
+  lastMusicVolume = value;
   if (musicGain) {
     musicGain.gain.value = value;
   } else {
@@ -202,13 +208,6 @@ const GATE_LINE_GAIN = 1.8; // WebAudio amplification so lines are nice and loud
 const MUSIC_DUCK_VOLUME = 0.18; // rowing-music volume while a spoken line plays
 let lineDuckUntil = 0; // performance.now() until which the music stays ducked
 
-// iOS Safari's audio pipeline stutters (eventually going silent) if
-// playbackRate is rewritten every animation frame. Only write it when it has
-// moved meaningfully, and no more often than this interval.
-const PLAYBACK_RATE_MIN_DELTA = 0.02;
-const PLAYBACK_RATE_MIN_INTERVAL_MS = 150;
-let lastPlaybackRateWrite = 0;
-
 const gateLineAudios = GATE_LINE_SRCS.map((src) => {
   const audio = new Audio(src);
   audio.preload = "auto";
@@ -260,10 +259,10 @@ function primeMusic() {
   routeMusicThroughGain();
   // iPad Safari may reject a later play() if it is not inside the original
   // button tap. Start once at volume 0 and keep it alive; updateMusic() only
-  // changes volume and playbackRate after that.
+  // changes volume after that. Natural 1.0x tempo, set once and never touched.
   if (musicAvailable) {
     setMusicVolume(0);
-    rowMusic.playbackRate = 0.25;
+    rowMusic.playbackRate = 1;
     rowMusic
       .play()
       .then(() => {
@@ -351,28 +350,19 @@ function playGateFanfare() {
 
 function updateMusic() {
   if (!musicAvailable) return;
-  const rowPower = Math.max(state.envLeft, state.envRight);
-  state.musicLevel = state.musicLevel * 0.9 + rowPower * 0.1;
 
+  // Play only after the game has started; silent otherwise.
   if (!state.running) {
     setMusicVolume(0);
     return;
   }
 
   if (rowMusic.paused && musicUnlocked) rowMusic.play().catch(() => {});
-  const rowing = state.musicLevel > 0.04;
-  const level = Math.min(1, state.musicLevel);
-  const targetRate = rowing ? 0.25 + level * 1.25 : 0.25;
-  const now = performance.now();
-  const rateMoved = Math.abs(targetRate - rowMusic.playbackRate) > PLAYBACK_RATE_MIN_DELTA;
-  if (rateMoved && now - lastPlaybackRateWrite > PLAYBACK_RATE_MIN_INTERVAL_MS) {
-    rowMusic.playbackRate = targetRate;
-    lastPlaybackRateWrite = now;
-  }
-  // Duck the music while a spoken gate line is playing so the voice stands out.
-  const ducking = now < lineDuckUntil;
-  const fullVolume = ducking ? MUSIC_DUCK_VOLUME : 1;
-  setMusicVolume(rowing ? fullVolume : 0);
+
+  // Steady full volume once running (no rowing-based fade, no tempo change).
+  // Still duck briefly while a spoken gate line plays so the voice stands out.
+  const ducking = performance.now() < lineDuckUntil;
+  setMusicVolume(ducking ? MUSIC_DUCK_VOLUME : 1);
 }
 
 // --- Pose sensor (MediaPipe) ---
