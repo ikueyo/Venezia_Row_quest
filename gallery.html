@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#120e1c" />
+    <title>Venezia Glass Gallery</title>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.165.0/examples/jsm/"
+        }
+      }
+    </script>
+    <style>
+      :root {
+        --gold: #ffd166;
+        --ink: #fdf6e8;
+        font-family: ui-rounded, "Avenir Next", "Segoe UI", Arial, "Noto Sans TC", sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background: #120e1c;
+        color: var(--ink);
+      }
+
+      #galleryCanvas {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        touch-action: none;
+      }
+
+      .hud {
+        position: absolute;
+        z-index: 3;
+        pointer-events: none;
+      }
+
+      .hud-top {
+        top: max(18px, env(safe-area-inset-top));
+        left: max(22px, env(safe-area-inset-left));
+        right: max(22px, env(safe-area-inset-right));
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+      }
+
+      .hud-title p {
+        margin: 0;
+        font-size: 0.78rem;
+        font-weight: 900;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: rgba(253, 246, 232, 0.66);
+      }
+
+      .hud-title h1 {
+        margin: 2px 0 0;
+        font-size: clamp(1.4rem, 3.4vw, 2.6rem);
+        line-height: 1.05;
+        text-shadow: 0 4px 30px rgba(255, 209, 102, 0.35);
+      }
+
+      .hud-count {
+        padding: 10px 16px;
+        border: 1px solid rgba(255, 209, 102, 0.45);
+        border-radius: 999px;
+        background: rgba(18, 14, 28, 0.6);
+        font-weight: 950;
+        font-size: clamp(0.9rem, 1.8vw, 1.15rem);
+        color: var(--gold);
+        backdrop-filter: blur(10px);
+        white-space: nowrap;
+      }
+
+      .hud-bottom {
+        left: 50%;
+        bottom: max(18px, env(safe-area-inset-bottom));
+        transform: translateX(-50%);
+        padding: 10px 22px;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        background: rgba(18, 14, 28, 0.62);
+        font-size: clamp(0.86rem, 1.7vw, 1.05rem);
+        font-weight: 800;
+        color: rgba(253, 246, 232, 0.85);
+        text-align: center;
+        max-width: calc(100vw - 40px);
+        backdrop-filter: blur(10px);
+      }
+
+      .back-link {
+        position: absolute;
+        z-index: 4;
+        left: max(22px, env(safe-area-inset-left));
+        bottom: max(18px, env(safe-area-inset-bottom));
+        padding: 10px 18px;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 209, 102, 0.5);
+        background: rgba(18, 14, 28, 0.65);
+        color: var(--gold);
+        font-weight: 950;
+        font-size: 0.95rem;
+        text-decoration: none;
+        backdrop-filter: blur(10px);
+      }
+
+      .back-link:active {
+        transform: translateY(1px);
+      }
+
+      .caption {
+        position: absolute;
+        z-index: 4;
+        left: 50%;
+        bottom: max(84px, calc(env(safe-area-inset-bottom) + 66px));
+        transform: translateX(-50%);
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 14px 22px;
+        border-radius: 16px;
+        border: 1px solid rgba(255, 209, 102, 0.55);
+        background: rgba(18, 14, 28, 0.82);
+        backdrop-filter: blur(14px);
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+        max-width: calc(100vw - 40px);
+      }
+
+      .caption[hidden] {
+        display: none;
+      }
+
+      .caption .caption-name {
+        margin: 0;
+        font-size: clamp(1.15rem, 3vw, 1.7rem);
+        font-weight: 950;
+        color: var(--ink);
+      }
+
+      .caption .caption-slot {
+        margin: 2px 0 0;
+        font-size: 0.82rem;
+        font-weight: 800;
+        color: rgba(255, 209, 102, 0.9);
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .caption button {
+        border: 1px solid rgba(255, 255, 255, 0.28);
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.1);
+        color: var(--ink);
+        font: inherit;
+        font-weight: 950;
+        min-width: 44px;
+        min-height: 44px;
+        cursor: pointer;
+        touch-action: manipulation;
+      }
+
+      .empty-note {
+        position: absolute;
+        z-index: 4;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        width: min(460px, calc(100vw - 48px));
+        padding: 22px 26px;
+        border-radius: 18px;
+        border: 1px solid rgba(255, 209, 102, 0.4);
+        background: rgba(18, 14, 28, 0.85);
+        text-align: center;
+        font-size: 1.05rem;
+        font-weight: 800;
+        line-height: 1.55;
+        backdrop-filter: blur(12px);
+      }
+
+      .empty-note[hidden] {
+        display: none;
+      }
+
+      .empty-note a {
+        color: var(--gold);
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="galleryCanvas"></canvas>
+
+    <header class="hud hud-top">
+      <div class="hud-title">
+        <p>Summer Camp &middot; Italy Unit</p>
+        <h1>Venezia Glass Gallery</h1>
+      </div>
+      <div class="hud-count"><span id="windowCount">0 / 16</span></div>
+    </header>
+
+    <p class="hud hud-bottom" id="hintText">Tap a glowing window to admire it &middot; drag to look around</p>
+
+    <a class="back-link" href="./index.html">⛵ Back to game</a>
+
+    <div id="caption" class="caption" hidden>
+      <div>
+        <p class="caption-name" id="captionName"></p>
+        <p class="caption-slot" id="captionSlot"></p>
+      </div>
+      <button id="captionClose" type="button" aria-label="Close">✕</button>
+    </div>
+
+    <div id="emptyNote" class="empty-note" hidden>
+      The Basilica windows are still empty.<br />
+      Play <a href="./index.html">Venice Row Quest</a> on this iPad to install
+      the first stained-glass artwork!
+    </div>
+
+    <script type="module" src="./gallery.js"></script>
+  </body>
+</html>

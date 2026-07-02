@@ -1,4 +1,8 @@
-import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js";
+import * as THREE from "three";
+import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
+import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
+import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 
 const cameraVideo = document.querySelector("#camera");
 const gameCanvas = document.querySelector("#gameCanvas");
@@ -17,6 +21,13 @@ const els = {
   speedMeter: document.querySelector("#speedMeter"),
   countdownOverlay: document.querySelector("#countdownOverlay"),
   countdownNumber: document.querySelector("#countdownNumber"),
+  scanOverlay: document.querySelector("#scanOverlay"),
+  scanPreviewImg: document.querySelector("#scanPreviewImg"),
+  studentName: document.querySelector("#studentName"),
+  scanRetake: document.querySelector("#scanRetake"),
+  scanConfirm: document.querySelector("#scanConfirm"),
+  ceremonyBanner: document.querySelector("#ceremonyBanner"),
+  ceremonyText: document.querySelector("#ceremonyText"),
   notice: document.querySelector("#cameraNotice"),
   sparkLayer: document.querySelector("#sparkLayer"),
   stage: document.querySelector(".stage"),
@@ -403,12 +414,24 @@ const POSE_LINKS = [
 ];
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x9fe3ff);
-scene.fog = new THREE.Fog(0xbdeeff, 26, 96);
+// Golden-hour Venice: warm horizon haze; the sky dome carries the gradient.
+scene.background = new THREE.Color(0xffd9ae);
+scene.fog = new THREE.Fog(0xffd4a4, 28, 108);
 
-const renderCamera = new THREE.PerspectiveCamera(58, 1, 0.1, 160);
+const renderCamera = new THREE.PerspectiveCamera(58, 1, 0.1, 320);
 renderCamera.position.set(0, 5.9, 9.6);
 renderCamera.lookAt(0, 0.6, -18);
+// Smoothed camera look target; ceremony mode steers it toward the church window.
+const camLook = new THREE.Vector3(0, 0.6, -18);
+const camLookGoal = new THREE.Vector3();
+const camPosGoal = new THREE.Vector3();
+const ceremony = {
+  active: false,
+  returning: false,
+  holdUntil: Infinity,
+  pos: new THREE.Vector3(),
+  look: new THREE.Vector3(),
+};
 
 const renderer = new THREE.WebGLRenderer({
   canvas: gameCanvas,
@@ -419,6 +442,15 @@ const renderer = new THREE.WebGLRenderer({
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 0.95;
+
+// Post-processing: bloom makes the stained glass, gold trim and sun truly glow.
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, renderCamera));
+const bloomPass = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.32, 0.3, 0.9);
+composer.addPass(bloomPass);
+composer.addPass(new OutputPass());
 
 const world = new THREE.Group();
 scene.add(world);
@@ -452,6 +484,8 @@ let targetHighlight = null;
 const STORAGE_KEY = "venice-church-windows-v1";
 const ADMIN_PASSWORD = "camp2026"; // change to your own passcode
 let savedArt = []; // dataURL per window slot, index-aligned with churchWindows
+let savedNames = []; // student name per window slot, index-aligned with savedArt
+const nameplates = []; // small name sprites under filled windows
 let cargoDataURL = null; // current student's scanned artwork as a dataURL
 let rowerHead;
 let rowerFace;
@@ -467,30 +501,35 @@ const installDur = 2.6;
 const installFrom = new THREE.Vector3();
 const installTo = new THREE.Vector3();
 
-initScene();
-
+// NOTE: initScene() is invoked near the bottom of this file, after every
+// top-level `let`/`const` it depends on has been initialized.
 function initScene() {
-  const hemi = new THREE.HemisphereLight(0xfff6e0, 0x7fd4ff, 2.1);
+  const hemi = new THREE.HemisphereLight(0xffe9c8, 0x86c8ec, 1.45);
   scene.add(hemi);
 
-  const sun = new THREE.DirectionalLight(0xfff4d0, 2.4);
-  sun.position.set(10, 18, 8);
+  const sun = new THREE.DirectionalLight(0xffddA6, 2.1);
+  sun.position.set(10, 16, 6);
   sun.castShadow = true;
   sun.shadow.mapSize.width = 1024;
   sun.shadow.mapSize.height = 1024;
   scene.add(sun);
 
-  const fillLight = new THREE.DirectionalLight(0xffc7ec, 0.7);
+  const fillLight = new THREE.DirectionalLight(0xffb9d8, 0.5);
   fillLight.position.set(-12, 8, 6);
   scene.add(fillLight);
 
+  addSky();
+
   const canal = new THREE.PlaneGeometry(24, 200, 36, 120);
   const waterMaterial = new THREE.MeshStandardMaterial({
-    color: 0x36c6f0,
-    roughness: 0.22,
-    metalness: 0.12,
+    color: 0x2fb9e8,
+    roughness: 0.16,
+    metalness: 0.18,
     transparent: true,
     opacity: 0.95,
+    emissive: 0xffe6b8,
+    emissiveIntensity: 0.3,
+    emissiveMap: makeSparkleTexture(),
   });
   waterMesh = new THREE.Mesh(canal, waterMaterial);
   waterMesh.rotation.x = -Math.PI / 2;
@@ -506,7 +545,139 @@ function initScene() {
   gates.forEach((gate, index) => addGate(gate, index));
   boat = createBoat();
   scene.add(boat);
+  initSplashes();
   loadWindows();
+}
+
+// Scrolling dotted highlight texture: catches bloom as sun glitter on the water.
+let sparkleTexture = null;
+function makeSparkleTexture() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 256;
+  canvas.height = 256;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#000000";
+  ctx.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 150; i += 1) {
+    const x = Math.random() * 256;
+    const y = Math.random() * 256;
+    const r = 0.6 + Math.random() * 1.9;
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r * 3);
+    g.addColorStop(0, `rgba(255, 255, 255, ${0.35 + Math.random() * 0.6})`);
+    g.addColorStop(1, "rgba(255, 255, 255, 0)");
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(x, y, r * 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  sparkleTexture = new THREE.CanvasTexture(canvas);
+  sparkleTexture.wrapS = THREE.RepeatWrapping;
+  sparkleTexture.wrapT = THREE.RepeatWrapping;
+  // High repeat keeps the glitter dots tiny (big tiles read as snow patches).
+  sparkleTexture.repeat.set(9, 70);
+  return sparkleTexture;
+}
+
+// Golden-hour sky dome + low sun + drifting clouds.
+const clouds = [];
+function addSky() {
+  const skyGeo = new THREE.SphereGeometry(230, 32, 18);
+  const skyMat = new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    depthWrite: false,
+    fog: false,
+    uniforms: {
+      topColor: { value: new THREE.Color(0x77b6e8) },
+      midColor: { value: new THREE.Color(0xffd9a0) },
+      bottomColor: { value: new THREE.Color(0xffb37c) },
+    },
+    vertexShader: `
+      varying float vY;
+      void main() {
+        vY = normalize(position).y;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 topColor;
+      uniform vec3 midColor;
+      uniform vec3 bottomColor;
+      varying float vY;
+      void main() {
+        float h = clamp(vY, 0.0, 1.0);
+        vec3 col = mix(bottomColor, midColor, smoothstep(0.0, 0.18, h));
+        col = mix(col, topColor, smoothstep(0.14, 0.62, h));
+        gl_FragColor = vec4(col, 1.0);
+      }
+    `,
+  });
+  const sky = new THREE.Mesh(skyGeo, skyMat);
+  scene.add(sky);
+
+  // Sun disc low over the far end of the canal, bright enough to bloom.
+  const sunCanvas = document.createElement("canvas");
+  sunCanvas.width = 128;
+  sunCanvas.height = 128;
+  const sctx = sunCanvas.getContext("2d");
+  const sg = sctx.createRadialGradient(64, 64, 4, 64, 64, 64);
+  sg.addColorStop(0, "rgba(255, 252, 235, 1)");
+  sg.addColorStop(0.28, "rgba(255, 234, 170, 0.95)");
+  sg.addColorStop(0.6, "rgba(255, 190, 110, 0.35)");
+  sg.addColorStop(1, "rgba(255, 180, 100, 0)");
+  sctx.fillStyle = sg;
+  sctx.fillRect(0, 0, 128, 128);
+  const sunSprite = new THREE.Sprite(
+    new THREE.SpriteMaterial({
+      map: new THREE.CanvasTexture(sunCanvas),
+      transparent: true,
+      depthWrite: false,
+      fog: false,
+    }),
+  );
+  sunSprite.position.set(14, 20, -200);
+  sunSprite.scale.set(56, 56, 1);
+  scene.add(sunSprite);
+
+  // Soft billboard clouds, warm-lit from below, drifting slowly.
+  const cloudCanvas = document.createElement("canvas");
+  cloudCanvas.width = 256;
+  cloudCanvas.height = 128;
+  const cctx = cloudCanvas.getContext("2d");
+  for (let i = 0; i < 14; i += 1) {
+    const x = 40 + Math.random() * 176;
+    const y = 54 + Math.random() * 34;
+    const r = 18 + Math.random() * 26;
+    const g = cctx.createRadialGradient(x, y, 2, x, y, r);
+    g.addColorStop(0, "rgba(255, 244, 228, 0.85)");
+    g.addColorStop(0.7, "rgba(255, 226, 200, 0.4)");
+    g.addColorStop(1, "rgba(255, 226, 200, 0)");
+    cctx.fillStyle = g;
+    cctx.beginPath();
+    cctx.arc(x, y, r, 0, Math.PI * 2);
+    cctx.fill();
+  }
+  const cloudTex = new THREE.CanvasTexture(cloudCanvas);
+  const spots = [
+    [-58, 34, -180, 44], [40, 42, -190, 58], [-24, 48, -205, 66],
+    [68, 30, -165, 38], [-80, 26, -150, 34], [16, 36, -215, 72],
+  ];
+  spots.forEach(([x, y, z, s], i) => {
+    const cloud = new THREE.Sprite(
+      new THREE.SpriteMaterial({
+        map: cloudTex,
+        transparent: true,
+        depthWrite: false,
+        fog: false,
+        opacity: 0.82,
+      }),
+    );
+    cloud.position.set(x, y, z);
+    cloud.scale.set(s, s * 0.42, 1);
+    cloud.userData.driftSpeed = 0.4 + (i % 3) * 0.25;
+    cloud.userData.baseX = x;
+    scene.add(cloud);
+    clouds.push(cloud);
+  });
 }
 
 function addBuildings(side) {
@@ -624,21 +795,214 @@ function makeSmallBoat(color) {
   return group;
 }
 
+// A sleek Venetian gondola with a gondolier and the iconic metal ferro.
+function makeGondolaBoat() {
+  const group = new THREE.Group();
+  const hullMat = new THREE.MeshStandardMaterial({ color: 0x14100e, roughness: 0.4, metalness: 0.15 });
+  const hull = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.16, 2.3), hullMat);
+  group.add(hull);
+  const bow = new THREE.Mesh(new THREE.ConeGeometry(0.2, 0.7, 4), hullMat);
+  bow.rotation.x = Math.PI / 2;
+  bow.position.set(0, 0.05, -1.45);
+  group.add(bow);
+  const stern = bow.clone();
+  stern.rotation.x = -Math.PI / 2;
+  stern.position.z = 1.45;
+  group.add(stern);
+  const ferro = new THREE.Mesh(
+    new THREE.BoxGeometry(0.06, 0.36, 0.05),
+    new THREE.MeshStandardMaterial({ color: 0xd8dde2, metalness: 0.7, roughness: 0.25 }),
+  );
+  ferro.position.set(0, 0.3, -1.66);
+  group.add(ferro);
+  const trim = new THREE.Mesh(
+    new THREE.BoxGeometry(0.34, 0.05, 1.9),
+    new THREE.MeshStandardMaterial({ color: 0xffd166, roughness: 0.35, metalness: 0.3 }),
+  );
+  trim.position.y = 0.1;
+  group.add(trim);
+  const gondolier = new THREE.Mesh(
+    new THREE.CapsuleGeometry(0.1, 0.34, 6, 10),
+    new THREE.MeshStandardMaterial({ color: 0x243448, roughness: 0.6 }),
+  );
+  gondolier.position.set(0, 0.4, 0.85);
+  group.add(gondolier);
+  const head = new THREE.Mesh(
+    new THREE.SphereGeometry(0.09, 12, 12),
+    new THREE.MeshStandardMaterial({ color: 0xf8e0c8 }),
+  );
+  head.position.set(0, 0.72, 0.85);
+  group.add(head);
+  const hat = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.13, 0.13, 0.03, 14),
+    new THREE.MeshStandardMaterial({ color: 0xfff3d6, roughness: 0.6 }),
+  );
+  hat.position.set(0, 0.8, 0.85);
+  group.add(hat);
+  const oar = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.02, 0.02, 1.5, 8),
+    new THREE.MeshStandardMaterial({ color: 0xf5dca0, roughness: 0.4 }),
+  );
+  oar.position.set(0.3, 0.35, 0.6);
+  oar.rotation.z = -Math.PI / 3;
+  group.add(oar);
+  return group;
+}
+
+// A little moored sailboat with a bright triangular sail.
+function makeSailboat(hullColor, sailColor) {
+  const group = new THREE.Group();
+  const hull = new THREE.Mesh(
+    new THREE.BoxGeometry(0.6, 0.2, 1.6),
+    new THREE.MeshStandardMaterial({ color: hullColor, roughness: 0.55 }),
+  );
+  group.add(hull);
+  const mast = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.025, 0.03, 1.7, 8),
+    new THREE.MeshStandardMaterial({ color: 0x8a6a4a, roughness: 0.6 }),
+  );
+  mast.position.y = 0.9;
+  group.add(mast);
+  const sailGeo = new THREE.BufferGeometry();
+  sailGeo.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute([
+      0.03, 1.62, 0,
+      0.03, 0.42, 0,
+      0.03, 0.42, 0.92,
+    ], 3),
+  );
+  sailGeo.computeVertexNormals();
+  const sail = new THREE.Mesh(
+    sailGeo,
+    new THREE.MeshStandardMaterial({ color: sailColor, roughness: 0.5, side: THREE.DoubleSide }),
+  );
+  group.add(sail);
+  return group;
+}
+
+// Fairway buoy: a bobbing float with a tiny flag.
+function makeBuoy(color) {
+  const group = new THREE.Group();
+  const ball = new THREE.Mesh(
+    new THREE.SphereGeometry(0.2, 14, 12),
+    new THREE.MeshStandardMaterial({ color, roughness: 0.4, emissive: color, emissiveIntensity: 0.18 }),
+  );
+  ball.position.y = 0.08;
+  group.add(ball);
+  const stick = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.02, 0.02, 0.5, 8),
+    new THREE.MeshStandardMaterial({ color: 0x6a5240, roughness: 0.7 }),
+  );
+  stick.position.y = 0.4;
+  group.add(stick);
+  const flag = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.24, 0.15),
+    new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5, side: THREE.DoubleSide }),
+  );
+  flag.position.set(0.12, 0.58, 0);
+  group.add(flag);
+  return group;
+}
+
+// Venetian striped mooring poles ("pali"), leaning in small clusters.
+let stripeTextures = null;
+function getStripeTextures() {
+  if (stripeTextures) return stripeTextures;
+  stripeTextures = [["#2f6fd0", "#ffffff"], ["#d24545", "#ffffff"], ["#2f9e5f", "#ffffff"]].map(
+    ([a, b]) => {
+      const canvas = document.createElement("canvas");
+      canvas.width = 32;
+      canvas.height = 64;
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = b;
+      ctx.fillRect(0, 0, 32, 64);
+      ctx.fillStyle = a;
+      ctx.save();
+      ctx.translate(16, 32);
+      ctx.rotate(0.35);
+      for (let y = -70; y < 70; y += 16) ctx.fillRect(-40, y, 80, 8);
+      ctx.restore();
+      const tex = new THREE.CanvasTexture(canvas);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.wrapS = THREE.RepeatWrapping;
+      tex.wrapT = THREE.RepeatWrapping;
+      tex.repeat.set(1, 2);
+      return tex;
+    },
+  );
+  return stripeTextures;
+}
+
+function makePoleCluster(styleIndex) {
+  const group = new THREE.Group();
+  const tex = getStripeTextures()[styleIndex % 3];
+  const mat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.55 });
+  const count = 2 + (styleIndex % 2);
+  for (let i = 0; i < count; i += 1) {
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.11, 1.9, 10), mat);
+    pole.position.set((i - (count - 1) / 2) * 0.34, 0.85, (i % 2) * 0.22);
+    pole.rotation.z = (Math.random() - 0.5) * 0.16;
+    pole.rotation.x = (Math.random() - 0.5) * 0.1;
+    const cap = new THREE.Mesh(
+      new THREE.SphereGeometry(0.1, 10, 8),
+      new THREE.MeshStandardMaterial({ color: 0xffd166, roughness: 0.4, metalness: 0.3 }),
+    );
+    cap.position.set(pole.position.x + pole.rotation.z * -1.9, 1.82, pole.position.z);
+    group.add(pole, cap);
+  }
+  return group;
+}
+
 function addOtherBoats() {
   const colors = [0xff5d73, 0x2f9bff, 0x22c55e, 0xffcf33, 0x9d7bff, 0xff77c8, 0x17c3d6];
-  const spots = [
+
+  function place(boatMesh, x, z, options = {}) {
+    boatMesh.position.set(x, 0.28, z);
+    boatMesh.rotation.y = options.rotY ?? (x < 0 ? 0.5 : -0.5);
+    boatMesh.userData.baseY = 0.28;
+    boatMesh.userData.baseZ = z;
+    boatMesh.userData.phase = z * 0.37;
+    boatMesh.userData.drift = options.drift || 0;
+    world.add(boatMesh);
+    otherBoats.push(boatMesh);
+  }
+
+  // Moored rowboats along both banks.
+  [
     [-6.4, -22], [6.8, -34], [-7.2, -52], [5.9, -70],
     [7.4, -92], [-6.0, -108], [6.2, -126],
-  ];
-  spots.forEach(([x, z], i) => {
-    const b = makeSmallBoat(colors[i % colors.length]);
-    b.position.set(x, 0.28, z);
-    b.rotation.y = x < 0 ? 0.5 : -0.5;
-    b.userData.baseY = 0.28;
-    b.userData.baseZ = z;
-    b.userData.phase = i * 1.3;
-    world.add(b);
-    otherBoats.push(b);
+  ].forEach(([x, z], i) => place(makeSmallBoat(colors[i % colors.length]), x, z));
+
+  // Colorful sailboats resting near the docks.
+  [
+    [6.6, -14, 1], [-6.7, -64, 3], [6.3, -104, 5], [-7.0, -142, 0],
+  ].forEach(([x, z, c]) => place(makeSailboat(colors[c], colors[(c + 3) % colors.length]), x, z));
+
+  // Gondolas gliding the other way, hugging the banks (decorative traffic).
+  [
+    { x: -4.8, z: -40, drift: 1.1 },
+    { x: 5.0, z: -95, drift: 0.8 },
+    { x: -4.9, z: -132, drift: 1.35 },
+  ].forEach(({ x, z, drift }) => {
+    place(makeGondolaBoat(), x, z, { drift, rotY: Math.PI + (x < 0 ? -0.06 : 0.06) });
+  });
+
+  // Buoys marking the edge of the fairway.
+  [
+    [-4.3, -30], [4.4, -58], [-4.4, -86], [4.3, -118],
+  ].forEach(([x, z], i) => place(makeBuoy(colors[(i * 2 + 1) % colors.length]), x, z));
+
+  // Striped Venetian mooring poles in clusters (static scenery).
+  [
+    [-7.6, -12], [7.5, -26], [-7.4, -44], [7.6, -62],
+    [-7.5, -80], [7.4, -98], [-7.6, -116], [7.5, -136],
+  ].forEach(([x, z], i) => {
+    const cluster = makePoleCluster(i);
+    cluster.position.set(x, 0, z);
+    cluster.userData.baseZ = z;
+    world.add(cluster);
+    scenery.push(cluster);
   });
 }
 
@@ -694,7 +1058,8 @@ function addChurch() {
     group.add(cornice);
   });
 
-  [-4.15, -2.25, 0, 2.25, 4.15].forEach((x) => {
+  // No column at x = 0 — the door and the round medallion sit there.
+  [-4.15, -2.25, 2.25, 4.15].forEach((x) => {
     const column = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.16, 5.15, 18), paleStone);
     column.position.set(x, 3.48, 2.79);
     column.castShadow = true;
@@ -728,13 +1093,14 @@ function addChurch() {
   pedimentTrim.position.set(0, 6.22, 2.82);
   group.add(pedimentTrim);
 
+  // Kept clear of the cornice above and proud of the wall so nothing clips it.
   const medallion = new THREE.Mesh(new THREE.CylinderGeometry(0.58, 0.58, 0.08, 36), tealMosaic);
-  medallion.position.set(0, 5.72, 2.86);
+  medallion.position.set(0, 5.28, 2.92);
   medallion.rotation.x = Math.PI / 2;
   group.add(medallion);
 
   const medallionRing = new THREE.Mesh(new THREE.TorusGeometry(0.61, 0.045, 10, 36), goldMat);
-  medallionRing.position.set(0, 5.72, 2.91);
+  medallionRing.position.set(0, 5.28, 2.96);
   group.add(medallionRing);
 
   // Fillable stained-glass windows: each student's artwork locks into the next
@@ -746,7 +1112,7 @@ function addChurch() {
       new THREE.MeshStandardMaterial({
         color: 0xfff2c8,
         emissive: 0xffce63,
-        emissiveIntensity: 0.6,
+        emissiveIntensity: 0.35,
         side: THREE.DoubleSide,
       }),
     );
@@ -766,7 +1132,7 @@ function addChurch() {
   const winMat = new THREE.MeshStandardMaterial({
     color: 0xfff2c8,
     emissive: 0xffce63,
-    emissiveIntensity: 0.6,
+    emissiveIntensity: 0.35,
   });
   [-1, 1].forEach((sx) => {
     [-1.6, 0, 1.6].forEach((wz) => {
@@ -935,6 +1301,9 @@ function updateTargetHighlight() {
 
 function fillWindow(slot, texture, glow) {
   slot.material.map = texture;
+  // Emissive uses the artwork itself, so the window glows in the artwork's own
+  // colors instead of washing out to flat white.
+  slot.material.emissiveMap = texture;
   slot.material.color.set(0xffffff);
   slot.material.emissive.set(0xffffff);
   slot.material.emissiveIntensity = glow;
@@ -945,7 +1314,7 @@ function saveWindows() {
   try {
     localStorage.setItem(
       STORAGE_KEY,
-      JSON.stringify({ count: installedCount, art: savedArt }),
+      JSON.stringify({ count: installedCount, art: savedArt, names: savedNames }),
     );
   } catch (error) {
     // storage full or unavailable — persistence is best-effort
@@ -961,6 +1330,7 @@ function loadWindows() {
   }
   if (!data || !Array.isArray(data.art)) return;
   savedArt = data.art.slice(0, churchWindows.length);
+  savedNames = Array.isArray(data.names) ? data.names.slice(0, churchWindows.length) : [];
   installedCount = Math.min(data.count || savedArt.length, churchWindows.length);
 
   const loader = new THREE.TextureLoader();
@@ -969,8 +1339,9 @@ function loadWindows() {
     if (!url || !slot) return;
     loader.load(url, (tex) => {
       tex.colorSpace = THREE.SRGBColorSpace;
-      fillWindow(slot, tex, 0.85);
+      fillWindow(slot, tex, 0.75);
     });
+    addNameplate(i);
   });
   updateTargetHighlight();
 }
@@ -978,14 +1349,22 @@ function loadWindows() {
 function resetAllWindows() {
   installedCount = 0;
   savedArt = [];
+  savedNames = [];
+  nameplates.forEach((sprite) => {
+    sprite.parent?.remove(sprite);
+    sprite.material.map?.dispose();
+    sprite.material.dispose();
+  });
+  nameplates.length = 0;
   churchWindows.forEach((slot) => {
     if (slot.material.map) {
       slot.material.map.dispose();
       slot.material.map = null;
     }
+    slot.material.emissiveMap = null;
     slot.material.color.set(0xfff2c8);
     slot.material.emissive.set(0xffce63);
-    slot.material.emissiveIntensity = 0.6;
+    slot.material.emissiveIntensity = 0.35;
     slot.material.needsUpdate = true;
   });
   try {
@@ -1159,6 +1538,153 @@ function createBoat() {
   return group;
 }
 
+// --- Water particles: oar splashes + a foam wake trailing the gondola. ---
+const SPLASH_COUNT = 240;
+let splashPoints = null;
+let splashPosAttr = null;
+let splashLifeAttr = null;
+let splashSizeAttr = null;
+const splashVel = new Float32Array(SPLASH_COUNT * 3);
+const splashLife = new Float32Array(SPLASH_COUNT);
+const splashMaxLife = new Float32Array(SPLASH_COUNT);
+let splashCursor = 0;
+const prevOarSin = { left: 0, right: 0 };
+let wakeAccum = 0;
+
+function initSplashes() {
+  const geo = new THREE.BufferGeometry();
+  const pos = new Float32Array(SPLASH_COUNT * 3);
+  const life = new Float32Array(SPLASH_COUNT);
+  const size = new Float32Array(SPLASH_COUNT);
+  for (let i = 0; i < SPLASH_COUNT; i += 1) {
+    pos[i * 3 + 1] = -10; // parked under the water until spawned
+    size[i] = 20;
+  }
+  splashPosAttr = new THREE.BufferAttribute(pos, 3);
+  splashPosAttr.setUsage(THREE.DynamicDrawUsage);
+  splashLifeAttr = new THREE.BufferAttribute(life, 1);
+  splashLifeAttr.setUsage(THREE.DynamicDrawUsage);
+  splashSizeAttr = new THREE.BufferAttribute(size, 1);
+  splashSizeAttr.setUsage(THREE.DynamicDrawUsage);
+  geo.setAttribute("position", splashPosAttr);
+  geo.setAttribute("aLife", splashLifeAttr);
+  geo.setAttribute("aSize", splashSizeAttr);
+
+  const mat = new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    uniforms: { uColor: { value: new THREE.Color(0xf2fbff) } },
+    vertexShader: `
+      attribute float aLife;
+      attribute float aSize;
+      varying float vLife;
+      void main() {
+        vLife = aLife;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = aSize * (12.0 / max(1.0, -mv.z)) * (0.5 + aLife * 0.5);
+        gl_Position = projectionMatrix * mv;
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 uColor;
+      varying float vLife;
+      void main() {
+        vec2 d = gl_PointCoord - vec2(0.5);
+        float a = smoothstep(0.5, 0.08, length(d)) * vLife * 0.9;
+        if (a < 0.015) discard;
+        gl_FragColor = vec4(uColor, a);
+      }
+    `,
+  });
+  splashPoints = new THREE.Points(geo, mat);
+  splashPoints.frustumCulled = false;
+  splashPoints.renderOrder = 3;
+  scene.add(splashPoints);
+}
+
+function spawnSplash(x, y, z, count, spread, up, size, lifeSec) {
+  if (!splashPoints) return;
+  for (let n = 0; n < count; n += 1) {
+    const i = splashCursor;
+    splashCursor = (splashCursor + 1) % SPLASH_COUNT;
+    splashPosAttr.setXYZ(
+      i,
+      x + (Math.random() - 0.5) * spread,
+      y,
+      z + (Math.random() - 0.5) * spread,
+    );
+    splashVel[i * 3] = (Math.random() - 0.5) * 1.3;
+    splashVel[i * 3 + 1] = up * (0.6 + Math.random() * 0.8);
+    splashVel[i * 3 + 2] = (Math.random() - 0.2) * 0.9;
+    splashLife[i] = lifeSec * (0.7 + Math.random() * 0.5);
+    splashMaxLife[i] = splashLife[i];
+    splashSizeAttr.setX(i, size * (0.7 + Math.random() * 0.6));
+  }
+}
+
+function updateSplashes(dt) {
+  if (!splashPoints) return;
+  // Match the bank-scroll speed so foam drifts backward past the hull.
+  const drift = state.speed * 9.6 * dt;
+  for (let i = 0; i < SPLASH_COUNT; i += 1) {
+    if (splashLife[i] <= 0) continue;
+    splashLife[i] -= dt;
+    if (splashLife[i] <= 0) {
+      splashPosAttr.setY(i, -10);
+      splashLifeAttr.setX(i, 0);
+      continue;
+    }
+    let y = splashPosAttr.getY(i) + splashVel[i * 3 + 1] * dt;
+    splashVel[i * 3 + 1] -= 4.6 * dt;
+    if (y < 0.03) {
+      y = 0.03;
+      splashVel[i * 3 + 1] = 0;
+      splashVel[i * 3] *= 0.9;
+      splashVel[i * 3 + 2] *= 0.9;
+    }
+    splashPosAttr.setXYZ(
+      i,
+      splashPosAttr.getX(i) + splashVel[i * 3] * dt,
+      y,
+      splashPosAttr.getZ(i) + splashVel[i * 3 + 2] * dt + drift,
+    );
+    splashLifeAttr.setX(i, Math.max(0, splashLife[i] / splashMaxLife[i]));
+  }
+  splashPosAttr.needsUpdate = true;
+  splashLifeAttr.needsUpdate = true;
+  splashSizeAttr.needsUpdate = true;
+}
+
+function updateSplashEmitters(dt) {
+  // Oar-catch splash: the moment a blade re-enters the water with real power.
+  const sinL = Math.sin(state.strokeLeft);
+  if (prevOarSin.left <= 0 && sinL > 0 && state.rowLeft > 0.16) {
+    spawnSplash(boat.position.x - 1.15, 0.1, boat.position.z + 0.3, 5, 0.45, 1.6, 30, 0.7);
+  }
+  prevOarSin.left = sinL;
+  const sinR = Math.sin(state.strokeRight);
+  if (prevOarSin.right <= 0 && sinR > 0 && state.rowRight > 0.16) {
+    spawnSplash(boat.position.x + 1.15, 0.1, boat.position.z + 0.3, 5, 0.45, 1.6, 30, 0.7);
+  }
+  prevOarSin.right = sinR;
+
+  // Foam wake behind the stern while the gondola is gliding.
+  wakeAccum += dt * (state.speed > 0.03 ? Math.min(26, state.speed * 150) : 0);
+  while (wakeAccum >= 1) {
+    wakeAccum -= 1;
+    spawnSplash(
+      boat.position.x + (Math.random() - 0.5) * 0.55,
+      0.04,
+      boat.position.z + 2.05,
+      1,
+      0.3,
+      0.22,
+      22,
+      1.5,
+    );
+  }
+}
+
 function makeTextSprite(text) {
   const canvas = document.createElement("canvas");
   canvas.width = 512;
@@ -1180,17 +1706,161 @@ function makeTextSprite(text) {
   return sprite;
 }
 
+// Small gold nameplate sprite shown under a filled church window.
+function makeNameSprite(text) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 320;
+  canvas.height = 80;
+  const ctx = canvas.getContext("2d");
+  ctx.beginPath();
+  ctx.roundRect(8, 14, 304, 52, 14);
+  ctx.fillStyle = "rgba(24, 18, 40, 0.82)";
+  ctx.fill();
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = "#ffd166";
+  ctx.stroke();
+  ctx.fillStyle = "#ffe9b0";
+  ctx.font = "800 32px Arial";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text.slice(0, 18), 160, 41);
+  const texture = new THREE.CanvasTexture(canvas);
+  const sprite = new THREE.Sprite(
+    new THREE.SpriteMaterial({ map: texture, transparent: true }),
+  );
+  sprite.scale.set(1.5, 0.375, 1);
+  return sprite;
+}
+
+function addNameplate(index) {
+  const name = (savedNames[index] || "").trim();
+  const slot = churchWindows[index];
+  if (!name || !slot || !church) return;
+  const sprite = makeNameSprite(name);
+  sprite.position.set(slot.position.x, slot.position.y - 0.84, slot.position.z + 0.14);
+  church.add(sprite);
+  nameplates.push(sprite);
+}
+
+// --- Transient FX: a warm light beam pours out of a freshly installed window. ---
+const transientFX = [];
+let beamTexture = null;
+
+function getBeamTexture() {
+  if (beamTexture) return beamTexture;
+  const canvas = document.createElement("canvas");
+  canvas.width = 64;
+  canvas.height = 256;
+  const ctx = canvas.getContext("2d");
+  const gradient = ctx.createLinearGradient(0, 0, 0, 256);
+  gradient.addColorStop(0, "rgba(255, 240, 200, 0.95)");
+  gradient.addColorStop(1, "rgba(255, 240, 200, 0)");
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, 64, 256);
+  beamTexture = new THREE.CanvasTexture(canvas);
+  return beamTexture;
+}
+
+function spawnWindowBeam(slot) {
+  if (!church || !slot) return;
+  const geo = new THREE.PlaneGeometry(1.5, 7);
+  geo.translate(0, -3.5, 0); // pivot at the window; the beam falls away below
+  const mat = new THREE.MeshBasicMaterial({
+    map: getBeamTexture(),
+    transparent: true,
+    opacity: 0,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+  const beam = new THREE.Mesh(geo, mat);
+  beam.position.copy(slot.position);
+  beam.rotation.y = slot.rotation.y;
+  beam.rotation.x = -0.5; // lean out of the facade toward the canal
+  beam.renderOrder = 4;
+  church.add(beam);
+  transientFX.push({ mesh: beam, t: 0, dur: 4.5 });
+}
+
+function updateFX(dt) {
+  for (let i = transientFX.length - 1; i >= 0; i -= 1) {
+    const fx = transientFX[i];
+    fx.t += dt;
+    const p = fx.t / fx.dur;
+    if (p >= 1) {
+      fx.mesh.parent?.remove(fx.mesh);
+      fx.mesh.geometry.dispose();
+      fx.mesh.material.dispose();
+      transientFX.splice(i, 1);
+      continue;
+    }
+    // Quick fade-in, long fade-out.
+    const fadeIn = Math.min(1, p * 5);
+    const fadeOut = 1 - Math.max(0, (p - 0.55) / 0.45);
+    fx.mesh.material.opacity = fadeIn * fadeOut * 0.85;
+  }
+}
+
+// Church bells for the install ceremony (WebAudio synth, no file needed).
+function playBells() {
+  if (!state.audio) return;
+  const now = state.audio.currentTime;
+  [0, 0.85, 1.7].forEach((offset, strike) => {
+    const base = strike === 2 ? 392 : 523.25;
+    [1, 2.02, 2.96, 4.15].forEach((mult, i) => {
+      const osc = state.audio.createOscillator();
+      const gain = state.audio.createGain();
+      osc.type = "sine";
+      osc.frequency.value = base * mult;
+      const t = now + offset;
+      gain.gain.setValueAtTime(0, t);
+      gain.gain.linearRampToValueAtTime(0.12 / (i + 1), t + 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.0008, t + 2.4);
+      osc.connect(gain);
+      gain.connect(state.audio.destination);
+      osc.start(t);
+      osc.stop(t + 2.5);
+    });
+  });
+}
+
+let ceremonyBannerTimer = 0;
+function showCeremonyBanner(text) {
+  if (!els.ceremonyBanner) return;
+  clearTimeout(ceremonyBannerTimer);
+  els.ceremonyText.textContent = text;
+  els.ceremonyBanner.hidden = false;
+  els.ceremonyBanner.style.animation = "none";
+  els.ceremonyBanner.offsetHeight;
+  els.ceremonyBanner.style.animation = "";
+  ceremonyBannerTimer = setTimeout(() => {
+    els.ceremonyBanner.hidden = true;
+  }, 5200);
+}
+
+function hideCeremonyBanner() {
+  clearTimeout(ceremonyBannerTimer);
+  if (els.ceremonyBanner) els.ceremonyBanner.hidden = true;
+}
+
 function laneToX(value) {
   return (value - 0.5) * 8.2;
 }
 
+let lastViewW = 0;
+let lastViewH = 0;
 function resize() {
   const rect = gameCanvas.getBoundingClientRect();
   const width = Math.max(1, Math.floor(rect.width));
   const height = Math.max(1, Math.floor(rect.height));
-  renderer.setSize(width, height, false);
-  renderCamera.aspect = width / height;
-  renderCamera.updateProjectionMatrix();
+  if (width !== lastViewW || height !== lastViewH) {
+    lastViewW = width;
+    lastViewH = height;
+    renderer.setSize(width, height, false);
+    composer.setSize(width, height);
+    renderCamera.aspect = width / height;
+    renderCamera.updateProjectionMatrix();
+  }
   analysisCanvas.width = 96;
   analysisCanvas.height = 72;
 
@@ -1289,6 +1959,11 @@ function startGame() {
 
 function resetGame() {
   clearCountdown();
+  ceremony.active = false;
+  ceremony.returning = false;
+  hideCeremonyBanner();
+  pendingScan = null;
+  if (els.scanOverlay) els.scanOverlay.hidden = true;
   state.running = false;
   state.score = 0;
   state.gateIndex = 0;
@@ -1322,35 +1997,24 @@ function resetGame() {
   els.notice.classList.remove("is-hidden");
 }
 
-// Capture the student's artwork (center of frame) and head (from pose) and
-// place them on the gondola as cargo + rower avatar.
-function captureScan() {
-  if (!state.cameraReady || cameraVideo.readyState < 2) {
-    els.notice.innerHTML = "Start the camera first, hold your stained-glass artwork up to fill the frame, then tap Scan.";
-    els.notice.classList.remove("is-hidden");
-    return;
-  }
+// Two-step scan: capture the artwork + face, show a preview with a name field,
+// and only load the gondola after the student confirms ("Use it!").
+let pendingScan = null; // { artCanvas, faceCanvas, dataURL }
+let currentStudentName = "";
+
+function captureFrames() {
   const vw = cameraVideo.videoWidth || 640;
   const vh = cameraVideo.videoHeight || 480;
 
   // Artwork: central square region where the student holds the piece.
+  // Captured UN-mirrored so any lettering in the glass reads correctly
+  // on the church window and in the gallery.
   const artSize = Math.min(vw, vh) * 0.6;
   const artCanvas = document.createElement("canvas");
-  artCanvas.width = 256;
-  artCanvas.height = 256;
+  artCanvas.width = 512;
+  artCanvas.height = 512;
   const actx = artCanvas.getContext("2d");
-  actx.translate(256, 0);
-  actx.scale(-1, 1);
-  actx.drawImage(cameraVideo, (vw - artSize) / 2, (vh - artSize) / 2, artSize, artSize, 0, 0, 256, 256);
-  cargoDataURL = artCanvas.toDataURL("image/jpeg", 0.75); // for localStorage
-  cargoTexture = new THREE.CanvasTexture(artCanvas);
-  cargoTexture.colorSpace = THREE.SRGBColorSpace;
-  cargoMesh.material.map = cargoTexture;
-  cargoMesh.material.color.set(0xffffff);
-  cargoMesh.material.emissive.set(0xffffff);
-  cargoMesh.material.emissiveIntensity = 0.35;
-  cargoMesh.material.needsUpdate = true;
-  cargoGroup.visible = true;
+  actx.drawImage(cameraVideo, (vw - artSize) / 2, (vh - artSize) / 2, artSize, artSize, 0, 0, 512, 512);
 
   // Head: bounding box around head/face landmarks, else top-center fallback.
   let fx = vw * 0.32;
@@ -1401,17 +2065,63 @@ function captureScan() {
   fctx.beginPath();
   fctx.arc(80, 80, 76, 0, Math.PI * 2);
   fctx.stroke();
-  const faceTex = new THREE.CanvasTexture(faceCanvas);
+
+  return {
+    artCanvas,
+    faceCanvas,
+    dataURL: artCanvas.toDataURL("image/jpeg", 0.72),
+  };
+}
+
+function captureScan() {
+  if (!state.cameraReady || cameraVideo.readyState < 2) {
+    els.notice.innerHTML = "Start the camera first, hold your stained-glass artwork up to fill the frame, then tap Scan.";
+    els.notice.classList.remove("is-hidden");
+    return;
+  }
+  pendingScan = captureFrames();
+  els.scanPreviewImg.src = pendingScan.dataURL;
+  els.scanOverlay.hidden = false;
+  els.notice.classList.add("is-hidden");
+}
+
+function retakeScan() {
+  if (!state.cameraReady || cameraVideo.readyState < 2) return;
+  pendingScan = captureFrames();
+  els.scanPreviewImg.src = pendingScan.dataURL;
+}
+
+function confirmScan() {
+  if (!pendingScan) return;
+
+  cargoDataURL = pendingScan.dataURL; // for localStorage
+  cargoTexture = new THREE.CanvasTexture(pendingScan.artCanvas);
+  cargoTexture.colorSpace = THREE.SRGBColorSpace;
+  cargoMesh.material.map = cargoTexture;
+  cargoMesh.material.emissiveMap = cargoTexture;
+  cargoMesh.material.color.set(0xffffff);
+  cargoMesh.material.emissive.set(0xffffff);
+  cargoMesh.material.emissiveIntensity = 0.3;
+  cargoMesh.material.needsUpdate = true;
+  cargoGroup.visible = true;
+
+  const faceTex = new THREE.CanvasTexture(pendingScan.faceCanvas);
   faceTex.colorSpace = THREE.SRGBColorSpace;
   rowerFace.material.map = faceTex;
   rowerFace.material.needsUpdate = true;
   rowerFace.visible = true;
 
+  currentStudentName = els.studentName.value.trim();
+  pendingScan = null;
+  els.scanOverlay.hidden = true;
+
   state.hasArt = true;
   state.delivered = false;
   if (!state.running) startGame();
   els.missionTag.textContent = "Cargo ready";
-  els.missionTitle.textContent = "Artwork loaded on the gondola";
+  els.missionTitle.textContent = currentStudentName
+    ? `${currentStudentName}'s artwork is on the gondola`
+    : "Artwork loaded on the gondola";
   els.missionHint.textContent = "Row with BOTH arms to the Basilica at the end and install your stained glass.";
   els.spokenLine.textContent = "I carry my glass art to the church!";
   els.notice.classList.add("is-hidden");
@@ -1459,10 +2169,19 @@ function startInstall() {
   else installFrom.copy(boat.position);
   installTargetWindow.getWorldPosition(installTo);
 
+  // Ceremony fly-in: glide the camera up to the target window and hold there
+  // until a moment after the glass locks in, then drift back to the boat.
+  ceremony.active = true;
+  ceremony.returning = false;
+  ceremony.holdUntil = Infinity;
+  ceremony.look.copy(installTo);
+  ceremony.pos.set(installTo.x * 0.72, installTo.y + 0.9, installTo.z + 6.4);
+
   installPiece = new THREE.Mesh(
     new THREE.PlaneGeometry(1, 1),
     new THREE.MeshStandardMaterial({
       map: cargoTexture,
+      emissiveMap: cargoTexture,
       emissive: 0xffffff,
       emissiveIntensity: 0.45,
       side: THREE.DoubleSide,
@@ -1490,10 +2209,10 @@ function updateInstall(time) {
   installPiece.scale.setScalar(1 + Math.sin(p * Math.PI) * 0.15);
   installPiece.material.emissiveIntensity = 0.45 + Math.sin(p * Math.PI) * 0.6;
 
-  if (p >= 1) finishInstall();
+  if (p >= 1) finishInstall(time);
 }
 
-function finishInstall() {
+function finishInstall(time) {
   installActive = false;
   if (installPiece) {
     scene.remove(installPiece);
@@ -1501,10 +2220,15 @@ function finishInstall() {
     installPiece.material.dispose();
     installPiece = null;
   }
-  if (installTargetWindow) {
-    fillWindow(installTargetWindow, cargoTexture, 0.85);
-    const idx = churchWindows.indexOf(installTargetWindow);
-    if (idx >= 0 && cargoDataURL) savedArt[idx] = cargoDataURL;
+  const slot = installTargetWindow;
+  if (slot) {
+    fillWindow(slot, cargoTexture, 0.75);
+    const idx = churchWindows.indexOf(slot);
+    if (idx >= 0 && cargoDataURL) {
+      savedArt[idx] = cargoDataURL;
+      savedNames[idx] = currentStudentName;
+      addNameplate(idx);
+    }
   }
   // This window is now permanently taken; advance to the next empty one.
   installedCount = Math.min(installedCount + 1, churchWindows.length);
@@ -1512,8 +2236,15 @@ function finishInstall() {
   updateTargetHighlight();
   saveWindows();
 
+  // Ceremony climax: bells, a light beam from the window, and a name banner.
+  playBells();
+  if (slot) spawnWindowBeam(slot);
+  ceremony.holdUntil = (time || 0) + 3.4;
+  const displayName = currentStudentName ? `${currentStudentName}'s stained glass` : "Stained glass";
+  showCeremonyBanner(`🎉 ${displayName} now glows in the Basilica! (${installedCount}/${churchWindows.length})`);
+
   els.missionTag.textContent = "Bravo";
-  els.missionTitle.textContent = `Stained glass installed! (${installedCount}/${churchWindows.length})`;
+  els.missionTitle.textContent = `${displayName} installed! (${installedCount}/${churchWindows.length})`;
   els.missionHint.textContent = "Your artwork now glows in the Basilica window. Ciao, Venezia!";
   els.spokenLine.textContent = "I installed my glass art in the church!";
   playChime();
@@ -1873,7 +2604,7 @@ function updateOar(oar, side, phase, power) {
   oar.rotation.z = side * (Math.PI / 1.5 + inWater * 0.16 - inAir * 0.45);
 }
 
-function updateThree(time) {
+function updateThree(time, dt) {
   const boatX = laneToX(state.boatX);
   boat.position.x += (boatX - boat.position.x) * 0.18;
   boat.rotation.z = -state.turn * 6 + Math.sin(time * 0.4) * 0.015;
@@ -1902,9 +2633,23 @@ function updateThree(time) {
   }
 
   updateInstall(time);
+  updateFX(dt);
+  updateSplashEmitters(dt);
+  updateSplashes(dt);
+
+  clouds.forEach((cloud, i) => {
+    cloud.position.x = cloud.userData.baseX + Math.sin(time * 0.03 * cloud.userData.driftSpeed + i * 2.1) * 7;
+  });
+  if (sparkleTexture) {
+    sparkleTexture.offset.y = time * 0.012;
+    sparkleTexture.offset.x = Math.sin(time * 0.25) * 0.02;
+  }
 
   otherBoats.forEach((b) => {
-    b.position.z = wrapScenery(b.userData.baseZ, scroll);
+    // `drift` gives a boat its own motion (oncoming gondolas) on top of the
+    // world scroll; moored boats have drift 0 and just bob in place.
+    const selfDrift = b.userData.drift ? time * b.userData.drift : 0;
+    b.position.z = wrapScenery(b.userData.baseZ, scroll + selfDrift);
     b.position.y = b.userData.baseY + Math.sin(time * 1.6 + b.userData.phase) * 0.05;
     b.rotation.z = Math.sin(time * 1.2 + b.userData.phase) * 0.05;
   });
@@ -1919,8 +2664,29 @@ function updateThree(time) {
     group.rotation.y = Math.sin(time + index) * 0.02;
   });
 
-  renderCamera.position.x += (boat.position.x * 0.22 - renderCamera.position.x) * 0.04;
-  renderCamera.lookAt(boat.position.x * 0.35, 0.6, -17);
+  // Camera: normal chase view, or a ceremony fly-in toward the church window.
+  if (ceremony.active) {
+    if (!ceremony.returning && time > ceremony.holdUntil) ceremony.returning = true;
+    if (ceremony.returning) {
+      camPosGoal.set(boat.position.x * 0.22, 5.9, 9.6);
+      camLookGoal.set(boat.position.x * 0.35, 0.6, -17);
+      if (renderCamera.position.distanceTo(camPosGoal) < 0.25) {
+        ceremony.active = false;
+        ceremony.returning = false;
+      }
+    } else {
+      camPosGoal.copy(ceremony.pos);
+      camLookGoal.copy(ceremony.look);
+    }
+    renderCamera.position.lerp(camPosGoal, 0.032);
+    camLook.lerp(camLookGoal, 0.055);
+  } else {
+    camPosGoal.set(boat.position.x * 0.22, 5.9, 9.6);
+    renderCamera.position.lerp(camPosGoal, 0.04);
+    camLookGoal.set(boat.position.x * 0.35, 0.6, -17);
+    camLook.lerp(camLookGoal, 0.1);
+  }
+  renderCamera.lookAt(camLook);
 
   const positions = waterMesh.geometry.attributes.position;
   for (let i = 0; i < positions.count; i += 1) {
@@ -1932,9 +2698,12 @@ function updateThree(time) {
   waterMesh.geometry.computeVertexNormals();
 }
 
+let prevFrameNow = 0;
 function frame(now) {
   resize();
   const time = now / 1000;
+  const dt = Math.min(0.05, prevFrameNow ? (now - prevFrameNow) / 1000 : 0.016);
+  prevFrameNow = now;
 
   let motion = null;
   const cameraLive = state.cameraReady && cameraVideo.readyState >= 2;
@@ -1950,9 +2719,9 @@ function frame(now) {
   applyControls(motion);
   checkGates();
   checkDelivery();
-  updateThree(time);
+  updateThree(time, dt);
   updateMusic();
-  renderer.render(scene, renderCamera);
+  composer.render();
   updateHud();
 
   if (state.successCooldown > 0) {
@@ -1981,6 +2750,11 @@ els.startCamera.addEventListener("click", () => {
 els.scanArt.addEventListener("click", () => {
   unlockAudio();
   captureScan();
+});
+els.scanRetake.addEventListener("click", retakeScan);
+els.scanConfirm.addEventListener("click", confirmScan);
+els.studentName.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") els.studentName.blur();
 });
 els.startGame.addEventListener("click", startGameCountdown);
 els.resetGame.addEventListener("click", resetGame);
@@ -2039,9 +2813,19 @@ if (testMode) {
       state.testBoost.right = 0.9;
     }
     if (action === "brake") state.testBoost.brake = 1;
+    if (action === "finish") {
+      // Jump straight to the Basilica: mark all gates passed and place the
+      // boat at the arrival point; checkDelivery() triggers on the next frame.
+      if (!state.running && !state.delivered) startGame();
+      state.gateIndex = gates.length;
+      state.progress = 836;
+      state.speed = 0.05;
+      updateMission();
+    }
   });
 }
 
+initScene();
 window.addEventListener("resize", resize);
 resize();
 resetGame();
