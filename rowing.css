@@ -564,7 +564,7 @@ h1 {
   z-index: 6;
   right: max(16px, env(safe-area-inset-right));
   top: max(96px, calc(env(safe-area-inset-top) + 88px));
-  width: clamp(160px, 20vw, 216px);
+  width: clamp(220px, 28vw, 340px);
   aspect-ratio: 4 / 3;
   border-radius: 14px;
   overflow: hidden;
@@ -766,7 +766,7 @@ h1 {
 
   .camera-panel {
     top: max(84px, calc(env(safe-area-inset-top) + 76px));
-    width: clamp(120px, 34vw, 168px);
+    width: clamp(160px, 44vw, 240px);
   }
 
   .scoreboard div {

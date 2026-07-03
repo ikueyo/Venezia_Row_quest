@@ -8,6 +8,11 @@ const cameraVideo = document.querySelector("#camera");
 const gameCanvas = document.querySelector("#gameCanvas");
 const analysisCanvas = document.querySelector("#analysisCanvas");
 const analysis = analysisCanvas.getContext("2d", { willReadFrequently: true });
+// Fixed low-res buffer for frame-difference motion sensing. Sized once here:
+// re-assigning canvas width/height clears and reallocates the buffer, so it
+// must never happen inside the per-frame resize() path.
+analysisCanvas.width = 96;
+analysisCanvas.height = 72;
 const skeletonCanvas = document.querySelector("#skeletonCanvas");
 const skeleton = skeletonCanvas.getContext("2d");
 
@@ -66,9 +71,22 @@ const GATE_TOLERANCE = 0.2;
 // in classroom lighting, while smoothing keeps the boat from jolting.
 const POSE_MOTION_DEADZONE = 0.014;
 const POSE_MOTION_GAIN = 7;
+const POSE_MIN_VISIBILITY = 0.36;
+const POSE_EDGE_MARGIN = 0.035;
 const ROW_SMOOTHING = 0.84;
 const ROW_INPUT_GAIN = 1 - ROW_SMOOTHING;
 const STROKE_ENVELOPE_DECAY = 0.9;
+
+// Oar visuals should feel attached to the student's arms. Pose mode drives the
+// oar position from wrist height; this short smoothing only removes sensor buzz.
+const OAR_REST_POSE = 0.42;
+// Base slope of each oar below horizontal (radians). The oarlock sits ~1.07
+// above the water, so this angle puts the blade tip right at the surface.
+const OAR_TILT = 0.55;
+const OAR_POWER_TAU = 0.045;
+const OAR_POSE_TAU = 0.055;
+// Fallback cycle speed used only when MediaPipe pose is unavailable.
+const STROKE_RATE = Math.PI * 2 * 1.25;
 
 const state = {
   cameraReady: false,
@@ -85,6 +103,16 @@ const state = {
   envRight: 0,
   strokeLeft: 0,
   strokeRight: 0,
+  oarRawLeft: 0,
+  oarRawRight: 0,
+  oarPowerLeft: 0,
+  oarPowerRight: 0,
+  oarPoseLeft: OAR_REST_POSE,
+  oarPoseRight: OAR_REST_POSE,
+  oarTargetPoseLeft: OAR_REST_POSE,
+  oarTargetPoseRight: OAR_REST_POSE,
+  oarPoseLiveLeft: false,
+  oarPoseLiveRight: false,
   balance: 1,
   lastFrame: null,
   audio: null,
@@ -273,13 +301,20 @@ function primeMusic() {
       });
   }
   if (gateMusicAvailable) {
+    // Muted during the unlock play/pause blip, same pattern as the other
+    // one-shot clips below — otherwise this briefly plays audibly, which is
+    // exactly what made the arrival music sometimes seem to fire on Camera tap.
+    gateMusic.muted = true;
     gateMusic
       .play()
       .then(() => {
         gateMusic.pause();
         gateMusic.currentTime = 0;
+        gateMusic.muted = false;
       })
-      .catch(() => {});
+      .catch(() => {
+        gateMusic.muted = false;
+      });
   }
   // Unlock the spoken-line clips too (play muted, then reset).
   gateLineAudios.forEach((audio) => {
@@ -357,7 +392,9 @@ function updateMusic() {
     return;
   }
 
-  if (rowMusic.paused && musicUnlocked) rowMusic.play().catch(() => {});
+  if (rowMusic.paused && musicUnlocked) {
+    rowMusic.play().catch(() => {});
+  }
 
   // Steady full volume once running (no rowing-based fade, no tempo change).
   // Still duck briefly while a spoken gate line plays so the voice stands out.
@@ -429,7 +466,9 @@ const renderer = new THREE.WebGLRenderer({
   alpha: false,
   powerPreference: "high-performance",
 });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+// Cap at 1.5x: on 2x iPads this renders ~44% fewer pixels (plus bloom) for a
+// barely visible sharpness cost on a projected/arm's-length screen.
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -829,13 +868,16 @@ function makeGondolaBoat() {
   );
   hat.position.set(0, 0.8, 0.85);
   group.add(hat);
-  const oar = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.02, 0.02, 1.5, 8),
-    new THREE.MeshStandardMaterial({ color: 0xf5dca0, roughness: 0.4 }),
-  );
-  oar.position.set(0.3, 0.35, 0.6);
-  oar.rotation.z = -Math.PI / 3;
+  // Gondolier's oar leans out over the starboard side, blade in the water.
+  const oarMat = new THREE.MeshStandardMaterial({ color: 0xf5dca0, roughness: 0.4 });
+  const oar = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.024, 1.6, 8), oarMat);
+  oar.position.set(0.35, 0.42, 0.6);
+  oar.rotation.z = Math.PI / 3;
   group.add(oar);
+  const oarBlade = new THREE.Mesh(new THREE.BoxGeometry(0.028, 0.42, 0.11), oarMat);
+  oarBlade.position.set(1.0, 0.05, 0.6);
+  oarBlade.rotation.z = Math.PI / 3;
+  group.add(oarBlade);
   return group;
 }
 
@@ -1514,18 +1556,95 @@ function createBoat() {
   cargoGroup.visible = false;
   group.add(cargoGroup);
 
-  const oarMaterial = new THREE.MeshStandardMaterial({ color: 0xf5dca0, roughness: 0.38 });
-  leftOar = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 2.5, 12), oarMaterial);
-  rightOar = leftOar.clone();
+  leftOar = createOar(-1);
+  rightOar = createOar(1);
   leftOar.position.set(-0.7, 0.72, 0.15);
   rightOar.position.set(0.7, 0.72, 0.15);
-  leftOar.rotation.z = Math.PI / 1.5;
-  rightOar.rotation.z = -Math.PI / 1.5;
-  leftOar.castShadow = true;
-  rightOar.castShadow = true;
+  leftOar.rotation.z = OAR_TILT;
+  rightOar.rotation.z = -OAR_TILT;
   group.add(leftOar, rightOar);
 
   return group;
+}
+
+function createOar(dir = 1) {
+  // `dir` is the local +x sign toward the blade: -1 for the left oar, +1 for
+  // the right. The group origin is the oarlock on the gunwale; everything is
+  // built along the local x axis so updateOar can tilt/sweep the whole group.
+  const oar = new THREE.Group();
+  const shaftMaterial = new THREE.MeshStandardMaterial({
+    color: 0xe7bd72,
+    roughness: 0.44,
+    metalness: 0.04,
+  });
+  const gripMaterial = new THREE.MeshStandardMaterial({
+    color: 0x6f3b1f,
+    roughness: 0.55,
+  });
+  const bladeMaterial = new THREE.MeshStandardMaterial({
+    color: 0xf6d58c,
+    emissive: 0x3b2306,
+    emissiveIntensity: 0.08,
+    roughness: 0.48,
+    side: THREE.DoubleSide,
+  });
+  const edgeMaterial = new THREE.MeshStandardMaterial({
+    color: 0x8d5528,
+    roughness: 0.5,
+  });
+
+  // Tapered shaft: thick at the rower's end, slim toward the blade.
+  // Cylinder +y maps to +dir x after the rotation, so radiusTop = blade end.
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.034, 2.35, 14), shaftMaterial);
+  shaft.rotation.z = -dir * (Math.PI / 2);
+  shaft.position.x = dir * 0.575;
+  shaft.castShadow = true;
+  oar.add(shaft);
+
+  // Inboard handle, kept short so it ends beside the rower, not in the face.
+  const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.042, 0.042, 0.26, 14), gripMaterial);
+  grip.rotation.z = Math.PI / 2;
+  grip.position.x = -dir * 0.45;
+  grip.castShadow = true;
+  oar.add(grip);
+
+  // Long narrow blade in line with the shaft, like a real Venetian remo.
+  // Root (narrow end) overlaps the shaft tip so there is no visible seam.
+  const bladeShape = new THREE.Shape();
+  bladeShape.moveTo(-0.38, 0.035);
+  bladeShape.bezierCurveTo(-0.16, 0.06, -0.02, 0.13, 0.14, 0.13);
+  bladeShape.bezierCurveTo(0.28, 0.13, 0.38, 0.07, 0.4, 0);
+  bladeShape.bezierCurveTo(0.38, -0.07, 0.28, -0.13, 0.14, -0.13);
+  bladeShape.bezierCurveTo(-0.02, -0.13, -0.16, -0.06, -0.38, -0.035);
+  bladeShape.closePath();
+  const bladeGeo = new THREE.ExtrudeGeometry(bladeShape, {
+    depth: 0.022,
+    bevelEnabled: true,
+    bevelSize: 0.01,
+    bevelThickness: 0.005,
+    bevelSegments: 2,
+  });
+  bladeGeo.translate(0, 0, -0.011);
+  const blade = new THREE.Mesh(bladeGeo, bladeMaterial);
+  blade.rotation.z = dir > 0 ? 0 : Math.PI;
+  blade.position.x = dir * 1.85;
+  blade.castShadow = true;
+  oar.add(blade);
+
+  // Spine running from the shaft tip down the middle of the blade.
+  const bladeRib = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.045, 0.032), edgeMaterial);
+  bladeRib.position.x = dir * 1.72;
+  bladeRib.castShadow = true;
+  oar.add(bladeRib);
+
+  // Leather collar where the oar rides the oarlock (the group origin).
+  const collar = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.16, 12), gripMaterial);
+  collar.rotation.z = Math.PI / 2;
+  collar.position.x = dir * 0.05;
+  collar.castShadow = true;
+  oar.add(collar);
+
+  return oar;
 }
 
 // --- Water particles: oar splashes + a foam wake trailing the gondola. ---
@@ -1538,7 +1657,7 @@ const splashVel = new Float32Array(SPLASH_COUNT * 3);
 const splashLife = new Float32Array(SPLASH_COUNT);
 const splashMaxLife = new Float32Array(SPLASH_COUNT);
 let splashCursor = 0;
-const prevOarSin = { left: 0, right: 0 };
+const prevOarPose = { left: OAR_REST_POSE, right: OAR_REST_POSE };
 let wakeAccum = 0;
 
 function initSplashes() {
@@ -1647,16 +1766,14 @@ function updateSplashes(dt) {
 
 function updateSplashEmitters(dt) {
   // Oar-catch splash: the moment a blade re-enters the water with real power.
-  const sinL = Math.sin(state.strokeLeft);
-  if (prevOarSin.left <= 0 && sinL > 0 && state.rowLeft > 0.16) {
-    spawnSplash(boat.position.x - 1.15, 0.1, boat.position.z + 0.3, 5, 0.45, 1.6, 30, 0.7);
+  if (prevOarPose.left <= 0.58 && state.oarPoseLeft > 0.58 && state.oarPowerLeft > 0.16) {
+    spawnSplash(boat.position.x - 2.0, 0.1, boat.position.z + 0.25, 5, 0.45, 1.6, 30, 0.7);
   }
-  prevOarSin.left = sinL;
-  const sinR = Math.sin(state.strokeRight);
-  if (prevOarSin.right <= 0 && sinR > 0 && state.rowRight > 0.16) {
-    spawnSplash(boat.position.x + 1.15, 0.1, boat.position.z + 0.3, 5, 0.45, 1.6, 30, 0.7);
+  prevOarPose.left = state.oarPoseLeft;
+  if (prevOarPose.right <= 0.58 && state.oarPoseRight > 0.58 && state.oarPowerRight > 0.16) {
+    spawnSplash(boat.position.x + 2.0, 0.1, boat.position.z + 0.25, 5, 0.45, 1.6, 30, 0.7);
   }
-  prevOarSin.right = sinR;
+  prevOarPose.right = state.oarPoseRight;
 
   // Foam wake behind the stern while the gondola is gliding.
   wakeAccum += dt * (state.speed > 0.03 ? Math.min(26, state.speed * 150) : 0);
@@ -1732,44 +1849,70 @@ function addNameplate(index) {
   nameplates.push(sprite);
 }
 
-// --- Transient FX: a warm light beam pours out of a freshly installed window. ---
+// --- Transient FX: a warm glow wraps around a freshly installed window. ---
 const transientFX = [];
-let beamTexture = null;
 
-function getBeamTexture() {
-  if (beamTexture) return beamTexture;
-  const canvas = document.createElement("canvas");
-  canvas.width = 64;
-  canvas.height = 256;
-  const ctx = canvas.getContext("2d");
-  const gradient = ctx.createLinearGradient(0, 0, 0, 256);
-  gradient.addColorStop(0, "rgba(255, 240, 200, 0.95)");
-  gradient.addColorStop(1, "rgba(255, 240, 200, 0)");
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, 64, 256);
-  beamTexture = new THREE.CanvasTexture(canvas);
-  return beamTexture;
+function makeGlowStrip(width, height, color, opacity) {
+  return new THREE.Mesh(
+    new THREE.PlaneGeometry(width, height),
+    new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    }),
+  );
 }
 
-function spawnWindowBeam(slot) {
+function spawnWindowGlow(slot) {
   if (!church || !slot) return;
-  const geo = new THREE.PlaneGeometry(1.5, 7);
-  geo.translate(0, -3.5, 0); // pivot at the window; the beam falls away below
-  const mat = new THREE.MeshBasicMaterial({
-    map: getBeamTexture(),
-    transparent: true,
-    opacity: 0,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
-    side: THREE.DoubleSide,
+  const group = new THREE.Group();
+  const materials = [];
+  const addPart = (mesh, x, y) => {
+    mesh.position.set(x, y, 0);
+    mesh.renderOrder = 4;
+    materials.push(mesh.material);
+    group.add(mesh);
+  };
+
+  // A soft rectangular aura stays on the glass instead of projecting a beam
+  // into the scene, so the installed artwork remains the focus.
+  addPart(makeGlowStrip(1.55, 0.1, 0xfff0a6, 0), 0, 0.7);
+  addPart(makeGlowStrip(1.55, 0.1, 0xfff0a6, 0), 0, -0.7);
+  addPart(makeGlowStrip(0.1, 1.55, 0xfff0a6, 0), -0.7, 0);
+  addPart(makeGlowStrip(0.1, 1.55, 0xfff0a6, 0), 0.7, 0);
+
+  const halo = new THREE.Mesh(
+    new THREE.RingGeometry(0.72, 0.92, 48),
+    new THREE.MeshBasicMaterial({
+      color: 0xffd36a,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    }),
+  );
+  halo.renderOrder = 3;
+  materials.push(halo.material);
+  group.add(halo);
+
+  const normal = new THREE.Vector3(Math.sin(slot.rotation.y), 0, Math.cos(slot.rotation.y));
+  group.position.copy(slot.position).addScaledVector(normal, 0.09);
+  group.rotation.y = slot.rotation.y;
+  church.add(group);
+  transientFX.push({ root: group, materials, t: 0, dur: 4.2 });
+}
+
+function disposeTransientFX(root) {
+  root.traverse((obj) => {
+    if (!obj.isMesh) return;
+    obj.geometry?.dispose();
+    if (Array.isArray(obj.material)) obj.material.forEach((mat) => mat.dispose());
+    else obj.material?.dispose();
   });
-  const beam = new THREE.Mesh(geo, mat);
-  beam.position.copy(slot.position);
-  beam.rotation.y = slot.rotation.y;
-  beam.rotation.x = -0.5; // lean out of the facade toward the canal
-  beam.renderOrder = 4;
-  church.add(beam);
-  transientFX.push({ mesh: beam, t: 0, dur: 4.5 });
 }
 
 function updateFX(dt) {
@@ -1778,16 +1921,20 @@ function updateFX(dt) {
     fx.t += dt;
     const p = fx.t / fx.dur;
     if (p >= 1) {
-      fx.mesh.parent?.remove(fx.mesh);
-      fx.mesh.geometry.dispose();
-      fx.mesh.material.dispose();
+      fx.root.parent?.remove(fx.root);
+      disposeTransientFX(fx.root);
       transientFX.splice(i, 1);
       continue;
     }
     // Quick fade-in, long fade-out.
     const fadeIn = Math.min(1, p * 5);
     const fadeOut = 1 - Math.max(0, (p - 0.55) / 0.45);
-    fx.mesh.material.opacity = fadeIn * fadeOut * 0.85;
+    const pulse = 0.92 + Math.sin(p * Math.PI * 4) * 0.08;
+    fx.root.scale.setScalar(1 + Math.sin(p * Math.PI) * 0.18);
+    fx.materials.forEach((mat, index) => {
+      const base = index === fx.materials.length - 1 ? 0.34 : 0.78;
+      mat.opacity = fadeIn * fadeOut * base * pulse;
+    });
   }
 }
 
@@ -1848,11 +1995,12 @@ function resize() {
     lastViewH = height;
     renderer.setSize(width, height, false);
     composer.setSize(width, height);
+    // Bloom is a soft glow anyway; running it at half resolution is invisible
+    // on screen but saves a lot of GPU time on iPad.
+    bloomPass.setSize(Math.ceil(width / 2), Math.ceil(height / 2));
     renderCamera.aspect = width / height;
     renderCamera.updateProjectionMatrix();
   }
-  analysisCanvas.width = 96;
-  analysisCanvas.height = 72;
 
   const panelRect = skeletonCanvas.getBoundingClientRect();
   const sw = Math.max(1, Math.floor(panelRect.width));
@@ -1863,13 +2011,32 @@ function resize() {
   }
 }
 
-async function startCamera() {
+// Stop any tracks from a previous getUserMedia call so re-starting the
+// camera (manually, or to self-heal a rotation glitch) never stacks streams.
+function stopCameraStream() {
+  const stream = cameraVideo.srcObject;
+  if (stream && typeof stream.getTracks === "function") {
+    stream.getTracks().forEach((track) => track.stop());
+  }
+  cameraVideo.srcObject = null;
+}
+
+// Bounded auto-retry counter for the orientation self-heal below, so a
+// persistently-confused camera can't loop getUserMedia forever.
+let cameraOrientationRetries = 0;
+const CAMERA_ORIENTATION_MAX_RETRIES = 2;
+
+async function startCamera(isRetry = false) {
   try {
+    stopCameraStream();
     const stream = await navigator.mediaDevices.getUserMedia({
       video: {
+        // Deliberately minimal constraints: no fixed width/height/aspectRatio.
+        // Hinting a specific frame shape is a common trigger for iPadOS
+        // Safari's camera-preview-rotated-90° bug, where the requested frame
+        // orientation conflicts with how the device is currently held. Letting
+        // iOS pick its own default avoids that conflict far more reliably.
         facingMode: { ideal: "user" },
-        width: { ideal: 1280 },
-        height: { ideal: 720 },
       },
       audio: false,
     });
@@ -1878,11 +2045,41 @@ async function startCamera() {
     state.cameraReady = true;
     els.notice.classList.add("is-hidden");
     if (!poseLandmarker) initPose();
+
+    // Self-heal: this game's camera panel is landscape (4:3). If iOS handed
+    // us a portrait-shaped stream instead, that's the signature of the
+    // rotation bug — restart once or twice to try to renegotiate correctly,
+    // without waiting for the teacher to notice and tap Camera again.
+    if (!isRetry && cameraVideo.videoWidth && cameraVideo.videoHeight) {
+      const isPortrait = cameraVideo.videoWidth < cameraVideo.videoHeight;
+      if (isPortrait && cameraOrientationRetries < CAMERA_ORIENTATION_MAX_RETRIES) {
+        cameraOrientationRetries += 1;
+        startCamera(true);
+        return;
+      }
+    }
+    cameraOrientationRetries = 0;
   } catch (error) {
     state.cameraReady = false;
     els.notice.innerHTML = "Camera is not available here. Use Test Mode, or deploy with HTTPS for iPad camera access.";
   }
 }
+
+// The camera preview can occasionally render rotated 90° on iPadOS Safari —
+// a known WebKit bug where the video track's orientation metadata falls out
+// of sync with the device, most often triggered by rotating the iPad or
+// switching apps and back. Re-requesting the stream re-negotiates it
+// correctly, so we do that automatically on the events that tend to cause it.
+// (Tapping the Camera button again does the same full stop+restart, so it
+// also works as an instant manual fix whenever this is noticed.)
+function healCameraOrientation() {
+  if (!state.cameraReady) return;
+  startCamera();
+}
+window.addEventListener("orientationchange", healCameraOrientation);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") healCameraOrientation();
+});
 
 function clearCountdown() {
   state.countdownTimers.forEach((timer) => clearTimeout(timer));
@@ -1940,6 +2137,18 @@ function startGame() {
   state.turn = 0;
   state.envLeft = 0;
   state.envRight = 0;
+  state.oarRawLeft = 0;
+  state.oarRawRight = 0;
+  state.oarPowerLeft = 0;
+  state.oarPowerRight = 0;
+  state.oarPoseLeft = OAR_REST_POSE;
+  state.oarPoseRight = OAR_REST_POSE;
+  state.oarTargetPoseLeft = OAR_REST_POSE;
+  state.oarTargetPoseRight = OAR_REST_POSE;
+  state.oarPoseLiveLeft = false;
+  state.oarPoseLiveRight = false;
+  prevOarPose.left = state.oarPoseLeft;
+  prevOarPose.right = state.oarPoseRight;
   state.lastFrame = null;
   updateMission();
   updateHud();
@@ -1954,6 +2163,31 @@ function resetGame() {
   hideCeremonyBanner();
   pendingScan = null;
   if (els.scanOverlay) els.scanOverlay.hidden = true;
+  // Restart the rowing music from the top for the next student instead of
+  // resuming from wherever the previous round left off. `.load()` — not a
+  // currentTime seek on the existing decode session — because seeking a
+  // long-paused, WebAudio-routed <audio> element and then playing it later
+  // let the decoder briefly resume from a stale buffered position before
+  // catching up (~0.5s of "last round" before snapping to the start).
+  // `.load()` fully resets the media resource, so it just starts at 0 with
+  // no seek to (potentially) race. It does not require a fresh user gesture:
+  // once an element has been played from a real tap, Safari keeps allowing
+  // play() on that same element for the rest of the page's lifetime.
+  // updateMusic() re-plays it via `musicUnlocked` once the next round's Start
+  // countdown finishes.
+  try {
+    rowMusic.load();
+  } catch (error) {
+    // ignore
+  }
+  // Also stop the Basilica arrival music: without this, resetting right
+  // after an arrival left it playing on top of the next round's rowing music.
+  try {
+    gateMusic.pause();
+    gateMusic.currentTime = 0;
+  } catch (error) {
+    // ignore
+  }
   state.running = false;
   state.score = 0;
   state.gateIndex = 0;
@@ -1965,6 +2199,18 @@ function resetGame() {
   state.rowRight = 0;
   state.envLeft = 0;
   state.envRight = 0;
+  state.oarRawLeft = 0;
+  state.oarRawRight = 0;
+  state.oarPowerLeft = 0;
+  state.oarPowerRight = 0;
+  state.oarPoseLeft = OAR_REST_POSE;
+  state.oarPoseRight = OAR_REST_POSE;
+  state.oarTargetPoseLeft = OAR_REST_POSE;
+  state.oarTargetPoseRight = OAR_REST_POSE;
+  state.oarPoseLiveLeft = false;
+  state.oarPoseLiveRight = false;
+  prevOarPose.left = state.oarPoseLeft;
+  prevOarPose.right = state.oarPoseRight;
   state.delivered = false;
 
   // Cancel any in-flight install animation.
@@ -1997,13 +2243,18 @@ function captureFrames() {
   const vh = cameraVideo.videoHeight || 480;
 
   // Artwork: central square region where the student holds the piece.
-  // Captured UN-mirrored so any lettering in the glass reads correctly
-  // on the church window and in the gallery.
+  // Mirrored to match the live (selfie-mirrored) preview the student was
+  // just looking at while positioning it — otherwise the captured/confirm
+  // preview flips left-right relative to what they saw a moment ago, which
+  // reads as broken even though the raw, un-mirrored capture is technically
+  // "correct" for lettering.
   const artSize = Math.min(vw, vh) * 0.6;
   const artCanvas = document.createElement("canvas");
   artCanvas.width = 512;
   artCanvas.height = 512;
   const actx = artCanvas.getContext("2d");
+  actx.translate(512, 0);
+  actx.scale(-1, 1);
   actx.drawImage(cameraVideo, (vw - artSize) / 2, (vh - artSize) / 2, artSize, artSize, 0, 0, 512, 512);
 
   // Head: bounding box around head/face landmarks, else top-center fallback.
@@ -2107,12 +2358,13 @@ function confirmScan() {
 
   state.hasArt = true;
   state.delivered = false;
-  if (!state.running) startGame();
+  // Do NOT auto-start here: the game (and its music) should only begin once
+  // the teacher taps Start and the 3-2-1-GO countdown finishes.
   els.missionTag.textContent = "Cargo ready";
   els.missionTitle.textContent = currentStudentName
     ? `${currentStudentName}'s artwork is on the gondola`
     : "Artwork loaded on the gondola";
-  els.missionHint.textContent = "Row with BOTH arms to the Basilica at the end and install your stained glass.";
+  els.missionHint.textContent = "Tap Start when ready, then row with BOTH arms to the Basilica and install your stained glass.";
   els.spokenLine.textContent = "I carry my glass art to the church!";
   els.notice.classList.add("is-hidden");
   playChime();
@@ -2226,9 +2478,9 @@ function finishInstall(time) {
   updateTargetHighlight();
   saveWindows();
 
-  // Ceremony climax: bells, a light beam from the window, and a name banner.
+  // Ceremony climax: bells, a window-wrapping glow, and a name banner.
   playBells();
-  if (slot) spawnWindowBeam(slot);
+  if (slot) spawnWindowGlow(slot);
   ceremony.holdUntil = (time || 0) + 3.4;
   const displayName = currentStudentName ? `${currentStudentName}'s stained glass` : "Stained glass";
   showCeremonyBanner(`🎉 ${displayName} now glows in the Basilica! (${installedCount}/${churchWindows.length})`);
@@ -2448,31 +2700,96 @@ function runPose(nowMs) {
   return motion;
 }
 
+function landmarkReliable(lm, minVisibility = POSE_MIN_VISIBILITY) {
+  return !!lm && (lm.visibility === undefined || lm.visibility >= minVisibility);
+}
+
+function landmarkInsideFrame(lm, margin = POSE_EDGE_MARGIN) {
+  return (
+    landmarkReliable(lm) &&
+    lm.x >= margin &&
+    lm.x <= 1 - margin &&
+    lm.y >= margin &&
+    lm.y <= 1 - margin
+  );
+}
+
+function landmarkDistance(a, b) {
+  if (!landmarkReliable(a) || !landmarkReliable(b)) return 0;
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function clamp01(value) {
+  return Math.min(1, Math.max(0, value));
+}
+
+function poseSteeringConfidence(landmarks) {
+  const torsoIds = [11, 12, 23, 24]; // shoulders + hips anchor the body.
+  const torsoInFrame = torsoIds.every((idx) => landmarkInsideFrame(landmarks[idx]));
+  const wristsInFrame = [15, 16].every((idx) => landmarkInsideFrame(landmarks[idx]));
+  if (!torsoInFrame || !wristsInFrame) return 0;
+
+  // When the student is very close, normalized wrist movement gets magnified
+  // and cropped landmarks jitter. Fade out one-arm steering before that turns
+  // into accidental camera/boat rotation.
+  const shoulderWidth = landmarkDistance(landmarks[11], landmarks[12]);
+  return clamp01((0.78 - shoulderWidth) / 0.16);
+}
+
+function wristStrokePose(landmarks, wristIdx) {
+  const wrist = landmarks[wristIdx];
+  const shoulders = [landmarks[11], landmarks[12]];
+  const hips = [landmarks[23], landmarks[24]];
+  if (!landmarkReliable(wrist, 0.3) || shoulders.some((lm) => !landmarkReliable(lm)) || hips.some((lm) => !landmarkReliable(lm))) {
+    return null;
+  }
+  const shoulderY = (shoulders[0].y + shoulders[1].y) * 0.5;
+  const hipY = (hips[0].y + hips[1].y) * 0.5;
+  const torsoHeight = Math.max(0.12, Math.min(0.42, Math.abs(hipY - shoulderY)));
+  // Classroom rowing here is mostly an up/down arm motion. Calibrate the full
+  // oar travel to the visible range in the sensor box, then invert it so the
+  // on-screen blade moves opposite to the student's hand height.
+  const high = shoulderY - torsoHeight * 0.42;
+  const low = shoulderY + torsoHeight * 0.72;
+  const pose = clamp01((wrist.y - high) / Math.max(0.08, low - high));
+  const eased = pose * pose * (3 - 2 * pose);
+  return 1 - eased;
+}
+
 // Derive left/right rowing activity from wrist vertical/horizontal speed.
-// Landmark 15 = left wrist, 16 = right wrist (raw image space).
+// Landmark 15 = player's left wrist, 16 = player's right wrist.
 function poseMotion(landmarks) {
   let left = 0;
   let right = 0;
+  const steeringConfidence = poseSteeringConfidence(landmarks);
+  const shoulderWidth = landmarkDistance(landmarks[11], landmarks[12]);
+  const bodyScale = shoulderWidth ? Math.min(0.7, Math.max(0.26, shoulderWidth)) : 0.34;
+  const motionScale = 0.34 / bodyScale;
+
   [15, 16].forEach((idx) => {
     const lm = landmarks[idx];
-    if (!lm || (lm.visibility !== undefined && lm.visibility < 0.3)) {
+    if (!landmarkReliable(lm, 0.3)) {
       wristPrev[idx] = null;
       return;
     }
     const prev = wristPrev[idx];
     if (prev) {
-      const speed = Math.hypot(lm.x - prev.x, lm.y - prev.y);
+      const speed = Math.hypot(lm.x - prev.x, lm.y - prev.y) * motionScale;
       // Deadzone removes small jitter so the sensor is less twitchy,
       // then a gentle gain scales a real stroke up to ~1.
       const activity = Math.min(1, Math.max(0, speed - POSE_MOTION_DEADZONE) * POSE_MOTION_GAIN);
-      // Mirror x so it matches the mirrored preview / player's own view.
-      const screenX = 1 - lm.x;
-      if (screenX < 0.5) left += activity;
+      if (idx === 15) left += activity;
       else right += activity;
     }
     wristPrev[idx] = { x: lm.x, y: lm.y };
   });
-  return { left: Math.min(1, left), right: Math.min(1, right) };
+  return {
+    left: Math.min(1, left),
+    right: Math.min(1, right),
+    steeringConfidence,
+    oarPoseLeft: wristStrokePose(landmarks, 15),
+    oarPoseRight: wristStrokePose(landmarks, 16),
+  };
 }
 
 function drawSkeleton(landmarks) {
@@ -2511,6 +2828,9 @@ function drawSkeleton(landmarks) {
 function applyControls(motion) {
   let left = motion.left;
   let right = motion.right;
+  const steeringConfidence = motion.steeringConfidence ?? 1;
+  state.oarPoseLiveLeft = Number.isFinite(motion.oarPoseLeft);
+  state.oarPoseLiveRight = Number.isFinite(motion.oarPoseRight);
 
   if (testMode) {
     left = Math.max(left, state.testBoost.left);
@@ -2520,6 +2840,11 @@ function applyControls(motion) {
     state.testBoost.right *= 0.86;
     state.testBoost.brake *= 0.82;
   }
+
+  state.oarRawLeft = left;
+  state.oarRawRight = right;
+  if (state.oarPoseLiveLeft) state.oarTargetPoseLeft = motion.oarPoseLeft;
+  if (state.oarPoseLiveRight) state.oarTargetPoseRight = motion.oarPoseRight;
 
   // Smoothed values drive the on-screen meters and oar animation.
   state.rowLeft = state.rowLeft * ROW_SMOOTHING + left * ROW_INPUT_GAIN;
@@ -2537,7 +2862,7 @@ function applyControls(motion) {
   // Steering from the imbalance: left arm only -> turn right (+x),
   // right arm only -> turn left (-x). Kept gentle so the boat drifts across
   // rather than snapping side to side.
-  const steering = (state.envLeft - state.envRight) * 0.010;
+  const steering = (state.envLeft - state.envRight) * 0.010 * steeringConfidence;
 
   if (state.running) {
     // Real-rowing feel: each stroke gives a forward surge, then the gondola
@@ -2579,19 +2904,20 @@ function checkGates() {
   }
 }
 
-// One oar's rowing cycle. side = +1 (left) / -1 (right).
-// Drive half (blade in water, sweeping backward) vs recovery half (lifted,
-// swinging forward) so the oar visibly "catches" and pulls the water.
-function updateOar(oar, side, phase, power) {
-  const sweepAmp = 0.5 + power * 0.7;
-  const sweep = -Math.cos(phase) * sweepAmp; // forward (catch) -> back (finish)
-  const s = Math.sin(phase);
-  const inWater = Math.max(0, s); // 0..1 during the power stroke
-  const inAir = Math.max(0, -s); // 0..1 during the recovery
+// One oar's visual pose. strokePose: 0 = catch/forward, 1 = finish/back.
+// With pose tracking, the student's wrist height picks this position directly.
+function updateOar(oar, side, strokePose, power, livePose) {
+  const boosted = Math.sqrt(Math.max(0, power));
+  const pose = clamp01(strokePose);
+  const display = livePose ? Math.max(0.22, boosted) : boosted;
+  const sweepAmp = livePose ? 0.58 + boosted * 0.28 : Math.min(1.3, display * 1.75);
+  const sweep = (pose * 2 - 1) * sweepAmp;
+  const inWater = pose * display;
+  const inAir = (1 - pose) * display;
   oar.rotation.x = sweep;
-  // Base tilt (~120deg from vertical) makes each oar slope OUTWARD and DOWN so
-  // the blade sits in the water. Power stroke dips it deeper; recovery lifts it.
-  oar.rotation.z = side * (Math.PI / 1.5 + inWater * 0.16 - inAir * 0.45);
+  // OAR_TILT slopes each oar OUTWARD and DOWN so the blade rests at the water
+  // surface. The power stroke dips it deeper; the recovery lifts it clear.
+  oar.rotation.z = side * (OAR_TILT + inWater * 0.22 - inAir * 0.35);
 }
 
 function updateThree(time, dt) {
@@ -2601,12 +2927,32 @@ function updateThree(time, dt) {
   boat.rotation.y = -state.turn * 12;
   boat.position.y = 0.35 + Math.sin(time * 0.5) * 0.02;
 
-  // Oar stroke cycle: catch -> power (blade sweeps back, low in the water)
-  // -> release -> recovery (blade lifts and swings forward through the air).
-  state.strokeLeft += 0.05 + state.rowLeft * 1.0;
-  state.strokeRight += 0.05 + state.rowRight * 1.0;
-  updateOar(leftOar, 1, state.strokeLeft, state.rowLeft);
-  updateOar(rightOar, -1, state.strokeRight, state.rowRight);
+  // With MediaPipe pose, oars follow wrist height directly. If pose is not
+  // available, fall back to a simple power-driven cycle for test mode/offline.
+  const oarLerp = 1 - Math.exp(-dt / OAR_POWER_TAU);
+  const poseLerp = 1 - Math.exp(-dt / OAR_POSE_TAU);
+  state.oarPowerLeft += (state.oarRawLeft - state.oarPowerLeft) * oarLerp;
+  state.oarPowerRight += (state.oarRawRight - state.oarPowerRight) * oarLerp;
+
+  if (state.oarPoseLiveLeft) {
+    state.oarPoseLeft += (state.oarTargetPoseLeft - state.oarPoseLeft) * poseLerp;
+  } else if (state.oarPowerLeft > 0.02) {
+    state.strokeLeft += state.oarPowerLeft * STROKE_RATE * dt;
+    state.oarPoseLeft = (1 - Math.cos(state.strokeLeft)) * 0.5;
+  } else {
+    state.oarPoseLeft += (OAR_REST_POSE - state.oarPoseLeft) * poseLerp;
+  }
+  if (state.oarPoseLiveRight) {
+    state.oarPoseRight += (state.oarTargetPoseRight - state.oarPoseRight) * poseLerp;
+  } else if (state.oarPowerRight > 0.02) {
+    state.strokeRight += state.oarPowerRight * STROKE_RATE * dt;
+    state.oarPoseRight = (1 - Math.cos(state.strokeRight)) * 0.5;
+  } else {
+    state.oarPoseRight += (OAR_REST_POSE - state.oarPoseRight) * poseLerp;
+  }
+
+  updateOar(leftOar, 1, state.oarPoseLeft, state.oarPowerLeft, state.oarPoseLiveLeft);
+  updateOar(rightOar, -1, state.oarPoseRight, state.oarPowerRight, state.oarPoseLiveRight);
 
   waterMesh.position.z = -50 + (state.progress * 0.16) % 8;
 
@@ -2647,9 +2993,12 @@ function updateThree(time, dt) {
   gateGroups.forEach((group, index) => {
     group.position.z = -gates[index].y * 0.16 + GATE_Z0 + state.progress * 0.16;
     const active = index === state.gateIndex;
-    group.userData.parts.forEach((part) => {
-      part.material = active ? group.userData.activeMaterial : group.userData.inactiveMaterial;
-    });
+    if (group.userData.wasActive !== active) {
+      group.userData.wasActive = active;
+      group.userData.parts.forEach((part) => {
+        part.material = active ? group.userData.activeMaterial : group.userData.inactiveMaterial;
+      });
+    }
     group.visible = group.position.z < 11 && group.position.z > -85;
     group.rotation.y = Math.sin(time + index) * 0.02;
   });
@@ -2678,14 +3027,25 @@ function updateThree(time, dt) {
   }
   renderCamera.lookAt(camLook);
 
-  const positions = waterMesh.geometry.attributes.position;
-  for (let i = 0; i < positions.count; i += 1) {
-    const x = positions.getX(i);
-    const y = positions.getY(i);
-    positions.setZ(i, Math.sin(x * 1.8 + time * 1.4) * 0.06 + Math.cos(y * 0.5 + time * 1.8) * 0.04);
+  // Displace the water plane and derive normals analytically from the wave
+  // function. This replaces computeVertexNormals(), which walked every
+  // triangle each frame and was the main CPU cost on iPad.
+  const waterGeo = waterMesh.geometry;
+  const pos = waterGeo.attributes.position.array;
+  const nor = waterGeo.attributes.normal.array;
+  for (let i = 0; i < pos.length; i += 3) {
+    const px = pos[i] * 1.8 + time * 1.4;
+    const py = pos[i + 1] * 0.5 + time * 1.8;
+    pos[i + 2] = Math.sin(px) * 0.06 + Math.cos(py) * 0.04;
+    const dzdx = Math.cos(px) * 0.108; // d/dx of the wave (0.06 * 1.8)
+    const dzdy = -Math.sin(py) * 0.02; // d/dy of the wave (0.04 * 0.5)
+    const inv = 1 / Math.sqrt(dzdx * dzdx + dzdy * dzdy + 1);
+    nor[i] = -dzdx * inv;
+    nor[i + 1] = -dzdy * inv;
+    nor[i + 2] = inv;
   }
-  positions.needsUpdate = true;
-  waterMesh.geometry.computeVertexNormals();
+  waterGeo.attributes.position.needsUpdate = true;
+  waterGeo.attributes.normal.needsUpdate = true;
 }
 
 let prevFrameNow = 0;

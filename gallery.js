@@ -38,6 +38,58 @@ const filledCount = saved.art.filter(Boolean).length;
 els.windowCount.textContent = `${filledCount} / ${SLOT_TOTAL}`;
 if (filledCount === 0) els.emptyNote.hidden = false;
 
+// --- Gallery background music (optional, same .m4a format as rowing-music). ---
+// Drop a track at assets/gallery-music.m4a; a missing file is skipped silently.
+// Mobile autoplay rules require a user gesture, so playback starts on the
+// first tap/drag. iOS Safari ignores HTMLMediaElement.volume, so the track is
+// routed through a WebAudio GainNode (same trick as the game page).
+const GALLERY_MUSIC_SRC = "./assets/gallery-music.m4a";
+const GALLERY_MUSIC_VOLUME = 0.55;
+const galleryMusic = new Audio(GALLERY_MUSIC_SRC);
+galleryMusic.loop = true;
+galleryMusic.preload = "auto";
+let galleryMusicAvailable = true;
+let galleryMusicStarted = false;
+galleryMusic.addEventListener("error", () => {
+  galleryMusicAvailable = false;
+});
+
+let galleryMusicRouted = false;
+function routeGalleryMusic() {
+  // createMediaElementSource may only ever be called once per element, so
+  // this must stay separate from the play-retry logic below.
+  if (galleryMusicRouted) return;
+  try {
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (AudioContext) {
+      const ctx = new AudioContext();
+      const source = ctx.createMediaElementSource(galleryMusic);
+      const gain = ctx.createGain();
+      gain.gain.value = GALLERY_MUSIC_VOLUME;
+      source.connect(gain);
+      gain.connect(ctx.destination);
+      if (ctx.state === "suspended") ctx.resume().catch(() => {});
+      galleryMusicRouted = true;
+      return;
+    }
+  } catch (error) {
+    // WebAudio routing unavailable — fall through to element volume.
+  }
+  galleryMusic.volume = GALLERY_MUSIC_VOLUME; // works everywhere except iOS
+  galleryMusicRouted = true;
+}
+
+function startGalleryMusic() {
+  if (galleryMusicStarted || !galleryMusicAvailable) return;
+  galleryMusicStarted = true;
+  routeGalleryMusic();
+  galleryMusic.play().catch(() => {
+    // Autoplay refused — clear the flag so the next tap can retry.
+    galleryMusicStarted = false;
+  });
+}
+window.addEventListener("pointerdown", startGalleryMusic);
+
 // --- Renderer / scene ---
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));

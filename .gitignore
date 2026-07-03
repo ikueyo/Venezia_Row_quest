@@ -1,0 +1,4 @@
+# Firebase Hosting deploy cache
+.firebase/
+
+node_modules/
