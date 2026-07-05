@@ -1,6 +1,9 @@
 // Venezia Glass Gallery — walk inside the Basilica and admire every student's
 // stained-glass window from within, lit by golden shafts of light.
 // Reads the same localStorage data the game writes (per-device persistence).
+// A downloaded snapshot (see "Export for parents") embeds its data in
+// window.__GALLERY_SNAPSHOT__ instead, so it works on any device with no
+// localStorage at all.
 
 import * as THREE from "three";
 import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
@@ -20,12 +23,13 @@ const els = {
   captionClose: document.querySelector("#captionClose"),
   emptyNote: document.querySelector("#emptyNote"),
   hintText: document.querySelector("#hintText"),
+  exportBtn: document.querySelector("#exportBtn"),
 };
 
 // --- Saved data ---
 let saved = { count: 0, art: [], names: [] };
 try {
-  const data = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
+  const data = window.__GALLERY_SNAPSHOT__ || JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
   if (data && Array.isArray(data.art)) {
     saved.art = data.art.slice(0, SLOT_TOTAL);
     saved.names = Array.isArray(data.names) ? data.names.slice(0, SLOT_TOTAL) : [];
@@ -596,6 +600,84 @@ function unfocusWindow() {
 }
 
 els.captionClose.addEventListener("click", unfocusWindow);
+
+// --- Export a standalone snapshot for parents to view from home. ---
+// A snapshot is just this same page's HTML with the current window data baked
+// into a <script> tag ahead of gallery.js (see the data-loading block up
+// top), so it needs no localStorage of its own — upload it anywhere on the
+// same site (next to gallery.js) and share the link. Exporting from a
+// snapshot is hidden: re-exporting an already-baked copy would just embed
+// the same frozen data again under a new name.
+if (window.__GALLERY_SNAPSHOT__ && els.exportBtn) {
+  els.exportBtn.hidden = true;
+}
+
+function slugify(text) {
+  return (
+    text
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "export"
+  );
+}
+
+function escapeHtml(text) {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+async function exportGallerySnapshot() {
+  const input = window.prompt(
+    "這次夏令營梯次的名稱？（會顯示在檔名與標題上）",
+    "Season 1",
+  );
+  if (input === null) return;
+  const title = input.trim() || "Venezia Glass Gallery";
+
+  let html;
+  try {
+    const res = await fetch("./gallery.html");
+    html = await res.text();
+  } catch (error) {
+    window.alert("匯出失敗：無法讀取 gallery.html。");
+    return;
+  }
+
+  // Escape "<" so a stray "</script>" inside base64 art data can't break out
+  // of the tag early.
+  const dataJson = JSON.stringify(saved).replace(/</g, "\\u003c");
+  const dataScript = `<script>window.__GALLERY_SNAPSHOT__ = ${dataJson};</script>\n    `;
+  const escapedTitle = escapeHtml(title);
+
+  html = html
+    .replace(
+      '<script type="module" src="./gallery.js"></script>',
+      `${dataScript}<script type="module" src="./gallery.js"></script>`,
+    )
+    .replace(
+      "<title>Venezia Glass Gallery</title>",
+      `<title>${escapedTitle} — Venezia Glass Gallery</title>`,
+    )
+    .replace("<p>Summer Camp &middot; Italy Unit</p>", `<p>${escapedTitle}</p>`)
+    // Parents don't need a way back into the live class game.
+    .replace(/\s*<a class="back-link"[^>]*>[^<]*<\/a>/, "");
+
+  const blob = new Blob([html], { type: "text/html" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `venezia-gallery-${slugify(title)}.html`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+if (els.exportBtn) {
+  els.exportBtn.addEventListener("click", () => {
+    exportGallerySnapshot().catch(() => window.alert("匯出失敗，請再試一次。"));
+  });
+}
 
 const slotNormal = new THREE.Vector3();
 const slotWorld = new THREE.Vector3();

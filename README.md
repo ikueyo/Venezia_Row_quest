@@ -68,6 +68,21 @@ Tap the **🖼 button** (top-right) — or open `gallery.html` — to walk **ins
 - Great for the end-of-camp showcase: mirror the iPad to a projector and let it auto-tour.
 - Optional **background music**: drop a track at `assets/gallery-music.m4a` (same format as the rowing music). It loops and starts on the first tap; a missing file is skipped silently.
 
+### Sharing it with parents after camp ends (⬇ Export for parents)
+
+The gallery only lives in that one iPad's localStorage, which is fine while
+wifi is unreliable in the classroom — but it also means no one else can see
+it. At the end of each camp session, tap **⬇ Export for parents** in the
+gallery's top bar, name that session (e.g. "Season 1"), and it downloads a
+single self-contained `.html` file with that session's windows baked in —
+no localStorage, no backend, works on any device. Upload the file next to
+`gallery.js` on your existing Firebase Hosting (same `firebase deploy` you
+already use) and share its link. Two sessions stay separate for free: each
+is just its own file (e.g. `venezia-gallery-season-1.html`,
+`venezia-gallery-season-2.html`), so a second export never overwrites the
+first. This needs internet exactly once, from a computer, after camp is
+over — the iPad itself never needs to be online.
+
 ## Admin panel (reset)
 
 Tap the **⚙ gear** button (top-right) to open the admin panel. Enter the passcode and tap **Reset all windows** to clear every installed window and start over.
@@ -157,7 +172,7 @@ In test mode, tap Start, then tap **Left / Right / Row / Boost / Brake** to simu
 - **Music tempo range** — `updateMusic()` (`0.25 + level * 1.25`).
 - **Admin passcode** — `ADMIN_PASSWORD`.
 
-Gallery tuning lives in `gallery.js`: bloom in `bloomPass`, tour path in `updateCamera()`, light-shaft tint/opacity in `buildSlot()`, window layout in `slotPlacements()`, background-music volume in `GALLERY_MUSIC_VOLUME`.
+Gallery tuning lives in `gallery.js`: bloom in `bloomPass`, tour path in `updateCamera()`, light-shaft tint/opacity in `buildSlot()`, window layout in `slotPlacements()`, background-music volume in `GALLERY_MUSIC_VOLUME`, parent export in `exportGallerySnapshot()` (fetches `gallery.html`, bakes `saved` into `window.__GALLERY_SNAPSHOT__`, strips the game back-link).
 
 ## Performance notes (iPad)
 
